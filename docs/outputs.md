@@ -1,0 +1,85 @@
+# 交付目录
+
+正常执行完整构建后，`mif_outputs` 自动整理当前配置的交付文件：
+
+```text
+outputs/
+├── Release/
+│   ├── app/                    Qt 桌面程序，可直接运行 mif_desktop.exe
+│   │   ├── mif_desktop.exe
+│   │   ├── mif_core.dll
+│   │   ├── *.dll              Qt、OpenCV 及其运行依赖
+│   │   ├── platforms/         Windows 窗口插件
+│   │   ├── iconengines/       SVG 图标插件
+│   │   └── licenses/
+│   ├── python/
+│   │   ├── mif/              __init__.py、扩展模块及 Windows DLL
+│   │   ├── wheels/           显式运行 mif_wheel 后生成的安装包
+│   │   ├── README.md
+│   │   └── licenses/
+│   ├── sdk/
+│   │   ├── include/mif/      fusion.hpp、options.hpp、export.hpp
+│   │   ├── lib/              mif_core.lib（DLL 导入库）
+│   │   │   └── cmake/Mif/    外部 CMake 项目的接入配置
+│   │   ├── bin/              mif_core.dll、OpenCV 运行依赖
+│   │   ├── README.md
+│   │   └── licenses/
+│   └── examples/             C++ 调用示例及运行依赖
+├── Debug/                    编译 Debug 时自动生成，不与 Release 混用
+└── demo/                     合成输入和融合示例
+```
+
+`build/` 保留工程文件、目标文件、测试程序和编译中间产物。交付程序以 `outputs/`
+为准。`outputs/` 已被 Git 忽略。
+
+## 常用命令
+
+```powershell
+cmake --preset local
+cmake --build --preset local
+ctest --preset local
+
+# 构建并整理已有目标
+cmake --build build/local --config Release --target mif_outputs
+
+# 单独构建 Python Release wheel；需 Python/pip 和可用的构建依赖
+cmake --build build/local --config Release --target mif_wheel
+
+# 启动桌面程序
+outputs/Release/app/mif_desktop.exe
+```
+
+wheel 只构建 Release 版本，输出到 `Release/python/wheels/`，不在每次普通编译时
+重新打包。普通编译会更新可直接导入的 `python/mif/` 文件夹。
+
+可用 `-DMIF_OUTPUT_ROOT=<其他绝对路径>` 修改根目录。多个不同工具链或 Python
+版本应使用不同输出根目录；切换依赖版本时使用新输出目录，避免残留旧 DLL。
+`-DMIF_STAGE_OUTPUTS=OFF` 关闭默认自动整理，此时仍可显式构建 `mif_outputs`。
+
+也可按组件安装到任意位置：
+
+```powershell
+cmake --install build/local --config Release --component SDK --prefix outputs/Release/sdk
+cmake --install build/local --config Release --component Desktop --prefix outputs/Release/app
+cmake --install build/local --config Release --component Python --prefix outputs/Release/python
+```
+
+## Python 使用
+
+```powershell
+$env:PYTHONPATH = "$PWD/outputs/Release/python"
+python -c "import mif; print(mif.__version__)"
+```
+
+使用与扩展匹配的 Python 版本和架构，并安装 NumPy。Windows 包会自行注册包内
+DLL 目录，通常不需要设置 OpenCV PATH。wheel 中也包含这些运行库，可以把匹配
+版本的 `.whl` 交给他人安装。
+
+## C++ 使用
+
+把完整 `sdk/` 目录交给使用者，接入方式见 [SDK 说明](sdk.md)。调用者仍需相同
+版本 OpenCV 的开发包，因为公开接口包含 `cv::Mat`；运行库已收集在 SDK 的 `bin/`。
+
+Windows 运行依赖收集和 Qt 部署已实现。Linux/macOS 当前只安装本项目的库，
+第三方运行库仍由使用者环境提供，尚未验证其独立打包。Windows 目标机器需有
+对应的 Visual C++ 运行库；Qt/SDK 的 Debug 构建还要求依赖具有对应 Debug 版本。

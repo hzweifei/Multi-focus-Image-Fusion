@@ -4,9 +4,12 @@
 #include <filesystem>
 #include <iostream>
 
+// C++ 调用示例：mif_example output.png input1.png input2.png [更多输入...]
+// 也可使用 mif_example --demo 输出目录，生成互补清晰样例及两种方法的融合结果。
 int main(int argc, char** argv) {
     try {
         if (argc == 3 && std::string(argv[1]) == "--demo") {
+            // 先生成纹理与文字组成的参考图，再构造左右清晰区域互补的两张输入。
             const std::filesystem::path dir(argv[2]);
             std::filesystem::create_directories(dir);
             cv::Mat sharp(384, 640, CV_8UC3, cv::Scalar(28, 32, 38));
@@ -24,6 +27,7 @@ int main(int argc, char** argv) {
             cv::imwrite((dir / "focus_01.png").string(), first);
             cv::imwrite((dir / "focus_02.png").string(), second);
             cv::imwrite((dir / "reference.png").string(), sharp);
+            // 两种方法共享同一入口，通过 FusionOptions 切换，便于比较输出效果。
             auto options = mif::FusionOptions{};
             cv::imwrite((dir / "fused_guided.png").string(), mif::fuse({first, second}, options).image);
             options.method = mif::FusionMethod::LaplacianPyramid;
@@ -36,8 +40,12 @@ int main(int argc, char** argv) {
             return 2;
         }
         std::vector<cv::Mat> images;
+        // 保留源文件的精度和通道；彩色图像按 OpenCV 约定使用 BGR 排列。
+        // 读取失败会产生空 Mat，交给核心统一校验后由下方异常处理报告。
         for (int i = 2; i < argc; ++i) images.push_back(cv::imread(argv[i], cv::IMREAD_UNCHANGED));
         const auto result = mif::fuse(images);
+        // 输出格式必须支持当前精度，避免保存时静默丢失 16 位或浮点信息。
+        // 浮点 TIFF 使用无压缩存储，以免默认彩色浮点编码改变像素值。
         const auto extension = std::filesystem::path(argv[1]).extension().string();
         if (result.image.depth() != CV_8U && extension != ".png" && extension != ".tif" && extension != ".tiff")
             throw std::runtime_error("Use PNG or TIFF to preserve high bit depth");
@@ -47,6 +55,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Failed to save output");
         std::cout << "Saved " << argv[1] << '\n'; return 0;
     } catch (const std::exception& error) {
+        // 输入校验、融合和写出错误统一映射为非零退出码，便于脚本调用。
         std::cerr << error.what() << '\n'; return 1;
     }
 }

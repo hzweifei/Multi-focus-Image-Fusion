@@ -1,4 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+ <!-- 深色底板、四角取景框与中心焦点组成应用图标，保持缩放时边缘清晰。 -->
  <rect width="64" height="64" rx="15" fill="#172336"/>
  <path d="M14 25V14h11M39 14h11v11M50 39v11H39M25 50H14V39" fill="none" stroke="#56d3bd" stroke-width="4"/>
  <circle cx="32" cy="32" r="10" fill="none" stroke="#e8f1fc" stroke-width="3"/>

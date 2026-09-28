@@ -1,8 +1,10 @@
+# pip 使用 scikit-build-core 调用 CMake，不另维护一套扩展编译脚本。
 [build-system]
 requires = ["scikit-build-core>=0.10,<1"]
 build-backend = "scikit_build_core.build"
 
 [project]
+# 安装包名称可以含连字符，实际导入名称仍为 mif。
 name = "mif-focus-fusion"
 version = "0.1.0"
 description = "Traditional multi-focus image fusion with C++ and OpenCV"
@@ -11,13 +13,18 @@ requires-python = ">=3.9"
 dependencies = ["numpy>=1.23"]
 
 [tool.scikit-build]
+# Python 源码位于绑定模块内，扩展模块与 DLL 通过 CMake 的 Python 安装组件补入。
 wheel.packages = ["bindings/python/python/mif"]
 wheel.license-files = ["THIRD_PARTY_NOTICES.md", "ext/nanobind/LICENSE", "ext/nanobind/ext/robin_map/LICENSE"]
 cmake.build-type = "Release"
+# wheel 只安装 Python 组件，不混入桌面程序、测试程序或 C++ SDK。
+install.components = ["Python"]
 
 [tool.scikit-build.cmake.define]
+# wheel 使用临时构建/安装目录，关闭普通工程的自动 outputs 整理，避免递归打包。
 MIF_BUILD_GUI = "OFF"
 MIF_BUILD_PYTHON = "ON"
 MIF_BUILD_TESTS = "OFF"
 MIF_BUILD_EXAMPLES = "OFF"
+MIF_STAGE_OUTPUTS = "OFF"
 

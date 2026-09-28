@@ -51,6 +51,17 @@ toolchain 指定。[详细构建与运行方法](docs/build.md)
 | `MIF_BUILD_PYTHON` | OFF | Python 扩展 |
 | `MIF_BUILD_TESTS` | OFF | 回归测试 |
 | `MIF_BUILD_EXAMPLES` | ON | C++ 示例 |
+| `MIF_BUILD_SHARED` | ON | 核心算法动态库 |
+| `MIF_STAGE_OUTPUTS` | ON | 构建后自动整理交付目录 |
+
+编译产物统一放在 `outputs/Release/`（Debug 单独分目录）：
+
+- `app/`：Qt 程序、DLL 和插件，运行 `mif_desktop.exe`。
+- `python/`：可导入的 `mif` 包；`mif_wheel` 目标生成 `wheels/*.whl`。
+- `sdk/`：对外使用的 `include/`、`lib/`、`bin/` 和 CMake 配置。
+- `examples/`：C++ 示例程序。
+
+详见 [交付目录](docs/outputs.md) 和 [SDK 接入方法](docs/sdk.md)。
 
 ## 使用
 
@@ -76,6 +87,9 @@ result = mif.fuse([image_near, image_far], options)  # NumPy；彩色为 BGR
 
 更多内容：[架构](docs/architecture.md) · [算法与参数](docs/algorithm.md) ·
 [验证记录](docs/verification.md) · [第三方声明](THIRD_PARTY_NOTICES.md)
+
+自有 C++、Python 和构建代码提供中文说明；建议从 `algorithms/include/mif/`
+的公开接口开始阅读。[代码阅读顺序与结构精简说明](docs/architecture.md#阅读顺序与中文注释)
 
 当前版本整栈驻留内存，尚未实现大图分块、批量任务、DCT/DTCWT/GFG-FGF 或安装包。
 实际显微和工业图像的效果仍需使用真实采集数据评估。

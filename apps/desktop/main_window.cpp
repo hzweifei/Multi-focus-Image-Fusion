@@ -26,18 +26,33 @@
 
 namespace mif::desktop {
 namespace {
+// 文件选择器和拖放导入使用相同的格式范围；真正的解码检查在 readImage 中进行。
 const QString imageFilter = QStringLiteral("图像 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)");
+
+// 先按扩展名过滤列表，避免导入目录时立即解码所有图片。
 bool supported(const QString& path) {
     static const QStringList extensions{"png", "jpg", "jpeg", "bmp", "tif", "tiff"};
     return extensions.contains(QFileInfo(path).suffix().toLower());
 }
+// 使用 Qt 的用户级设置记录最近访问目录，首次打开时从用户主目录开始。
 QString lastFolder() { return QSettings().value("lastFolder", QDir::homePath()).toString(); }
-}
+} // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui_(std::make_unique<Ui::MainWindow>()) {
     ui_->setupUi(this);
     setAcceptDrops(true);
     setMinimumSize(940, 670);
+    createSidebar();
+    createPreviewArea();
+    connectActions();
+
+    const auto geometry = QSettings().value("windowGeometry").toByteArray();
+    if (!geometry.isEmpty()) restoreGeometry(geometry);
+    updateControls();
+}
+
+void MainWindow::createSidebar() {
+    // 左侧第一组：导入、浏览和移除图像。完整路径保存在条目的 Qt::UserRole 中。
     auto* sidebar = new QWidget(this);
     sidebar->setMinimumWidth(270);
     sidebar->setMaximumWidth(330);
@@ -62,6 +77,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui_(std::make_uni
     edits->addWidget(remove_); edits->addWidget(clear_);
     side->addLayout(edits);
 
+    // 左侧第二组：顺序对应 FusionMethod、FocusMeasure、Alignment 的枚举值。
     parameters_ = new QGroupBox(QStringLiteral("02  /  融合设置"));
     auto* form = new QFormLayout(parameters_);
     form->setVerticalSpacing(12);
@@ -91,7 +107,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui_(std::make_uni
     run_->setObjectName("primaryButton"); run_->setMinimumHeight(44);
     side->addWidget(run_);
     ui_->workspaceLayout->addWidget(sidebar);
+}
 
+void MainWindow::createPreviewArea() {
+    // 右侧工具栏和并排预览区。两个预览都只显示 8 位副本，导出仍使用原始结果。
     auto* workspace = new QVBoxLayout;
     auto* toolbar = new QHBoxLayout;
     auto* heading = new QLabel(QStringLiteral("03  /  预览与结果"));
@@ -103,6 +122,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui_(std::make_uni
     toolbar->addWidget(fit); toolbar->addWidget(save_);
     workspace->addLayout(toolbar);
     auto* previews = new QSplitter(Qt::Horizontal);
+    // 两个面板结构相同，通过一个局部构造函数保持布局一致。
     auto addPreview = [previews](const QString& title, ImageView*& view, QLabel*& info) {
         auto* panel = new QWidget;
         auto* layout = new QVBoxLayout(panel);
@@ -126,6 +146,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui_(std::make_uni
     progress_->setFixedHeight(16); workspace->addWidget(progress_);
     ui_->workspaceLayout->addLayout(workspace, 1);
 
+    // 适应窗口按钮只与本区域有关，无需保存为窗口成员。
+    connect(fit, &QPushButton::clicked, this, [this] { source_view_->fitImage(); result_view_->fitImage(); });
+}
+
+void MainWindow::connectActions() {
+    // 所有导入方式复用 addPaths，统一完成过滤、排序、去重和结果失效处理。
     connect(add_, &QPushButton::clicked, this, [this] {
         addPaths(QFileDialog::getOpenFileNames(this, QStringLiteral("选择不同焦点的图片"), lastFolder(), imageFilter));
     });
@@ -145,18 +171,16 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui_(std::make_uni
     connect(method_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::updateControls);
     connect(run_, &QPushButton::clicked, this, &MainWindow::startFusion);
     connect(save_, &QPushButton::clicked, this, &MainWindow::exportResult);
-    connect(fit, &QPushButton::clicked, this, [this] { source_view_->fitImage(); result_view_->fitImage(); });
-    const auto geometry = QSettings().value("windowGeometry").toByteArray();
-    if (!geometry.isEmpty()) restoreGeometry(geometry);
-    updateControls();
 }
 
 MainWindow::~MainWindow() {
+    // 常规关闭由 closeEvent 异步等待；这里保证程序直接析构窗口时也能安全退出。
     if (worker_) { worker_->requestInterruption(); worker_->wait(); }
 }
 
 void MainWindow::addPaths(const QStringList& paths) {
     if (worker_) return;
+    // 文件夹仅导入当前层可读图片，避免隐式递归收集其他场景。
     QStringList expanded;
     for (const auto& path : paths) {
         const QFileInfo info(path);
@@ -165,10 +189,12 @@ void MainWindow::addPaths(const QStringList& paths) {
                 if (supported(file.filePath())) expanded.push_back(file.absoluteFilePath());
         } else if (info.isFile() && supported(path)) expanded.push_back(info.absoluteFilePath());
     }
+    // 自然排序使 focus_2 排在 focus_10 前；第一张图片将作为配准参考。
     QCollator collator(QLocale::English); collator.setNumericMode(true);
     std::sort(expanded.begin(), expanded.end(), [&collator](const QString& a, const QString& b) {
         return collator.compare(a, b) < 0;
     });
+    // 保留此前已添加的顺序，只对本次输入排序；绝对路径用于识别重复条目。
     int added = 0;
     for (const auto& path : expanded) {
         bool exists = false;
@@ -191,6 +217,7 @@ void MainWindow::previewSelected() {
     const auto* item = files_->currentItem();
     if (!item) { source_view_->setImage({}); source_info_->setText(QStringLiteral("等待图片")); return; }
     try {
+        // 显示副本拥有独立像素内存，因此离开此作用域后仍可安全显示。
         const auto image = readImage(item->data(Qt::UserRole).toString());
         source_view_->setImage(previewImage(image));
         source_info_->setText(QStringLiteral("%1\n%2 × %3 · %4 位 · %5 通道")
@@ -201,11 +228,13 @@ void MainWindow::previewSelected() {
 }
 
 void MainWindow::clearResult() {
+    // 输入发生改变时不能继续导出旧结果，以免误认其来自当前图像栈。
     result_.release(); result_view_->setImage({});
     result_info_->setText(QStringLiteral("完成融合后在此显示")); progress_->setValue(0);
 }
 
 void MainWindow::updateControls() {
+    // 以工作线程是否仍存在作为唯一的忙闲依据，任务取消期间仍保持输入锁定。
     const bool busy = worker_ != nullptr;
     add_->setEnabled(!busy); folder_->setEnabled(!busy);
     remove_->setEnabled(!busy && !files_->selectedItems().isEmpty());
@@ -220,6 +249,7 @@ void MainWindow::updateControls() {
 
 void MainWindow::startFusion() {
     if (worker_) {
+        // Qt 中断是请求标记；核心算法在阶段回调中检查，不强行终止 OpenCV 调用。
         worker_->requestInterruption(); run_->setEnabled(false);
         status_->setText(QStringLiteral("正在取消，将在当前处理步骤结束后停止…")); return;
     }
@@ -227,6 +257,7 @@ void MainWindow::startFusion() {
     if (window_->value() % 2 == 0) {
         status_->setText(QStringLiteral("统计窗口必须为奇数，例如 7、9 或 11。")); return;
     }
+    // 将控件值复制为本次任务的参数快照，后台线程不会读取界面控件。
     FusionOptions options;
     options.method = static_cast<FusionMethod>(method_->currentIndex());
     options.focus_measure = static_cast<FocusMeasure>(focus_->currentIndex());
@@ -237,11 +268,13 @@ void MainWindow::startFusion() {
     for (int i = 0; i < files_->count(); ++i) paths.push_back(files_->item(i)->data(Qt::UserRole).toString());
     clearResult();
     worker_ = new FusionWorker(paths, options, this);
+    // 信号从工作线程发出，Qt 将下面的接收回调排入界面线程执行。
     connect(worker_, &FusionWorker::progress, this, [this](int value, const QString& stage) {
         progress_->setValue(value);
         if (!worker_->isInterruptionRequested()) status_->setText(stage);
     });
     connect(worker_, &FusionWorker::completed, this, [this](const cv::Mat& image, const QString& summary) {
+        // cv::Mat 的引用计数保留结果像素；工作线程此后不再修改该缓冲区。
         result_ = image; result_view_->setImage(previewImage(result_)); result_info_->setText(summary);
         status_->setText(QStringLiteral("融合完成，可导出结果。自动配准开启时，结果已裁剪为共有区域。"));
         emit fusionCompleted();
@@ -251,6 +284,7 @@ void MainWindow::startFusion() {
     });
     connect(worker_, &FusionWorker::cancelled, this, [this] { status_->setText(QStringLiteral("已取消处理。")); progress_->setValue(0); });
     connect(worker_, &QThread::finished, this, [this] {
+        // 必须等 run 完全退出后再销毁线程对象；普通完成、失败和取消共用此清理路径。
         worker_->deleteLater(); worker_ = nullptr; updateControls();
         if (closing_) close();
     });
@@ -259,6 +293,7 @@ void MainWindow::startFusion() {
 
 void MainWindow::exportResult() {
     if (result_.empty()) return;
+    // 根据位深限制格式：16 位不允许 JPEG，浮点结果使用 TIFF 保留数据精度。
     const bool floating = result_.depth() == CV_32F;
     const auto filter = floating ? QStringLiteral("TIFF (*.tif *.tiff)") :
         result_.depth() == CV_16U ? QStringLiteral("PNG (*.png);;TIFF (*.tif *.tiff)") :
@@ -267,6 +302,7 @@ void MainWindow::exportResult() {
     auto path = QFileDialog::getSaveFileName(this, QStringLiteral("导出融合结果"),
         QDir(lastFolder()).filePath(floating ? "fused.tif" : "fused.png"), filter, &selected);
     if (path.isEmpty()) return;
+    // 未输入扩展名时按当前选中的格式补齐，实际编码和检查由 writeImage 完成。
     if (QFileInfo(path).suffix().isEmpty())
         path += selected.startsWith("TIFF") ? ".tif" : selected.startsWith("JPEG") ? ".jpg" : ".png";
     try {
@@ -279,6 +315,7 @@ void MainWindow::exportResult() {
 
 void MainWindow::closeEvent(QCloseEvent* event) {
     if (worker_) {
+        // 暂缓关闭让界面事件循环继续工作；finished 回调会重新触发 close。
         closing_ = true; worker_->requestInterruption(); event->ignore();
         status_->setText(QStringLiteral("正在停止处理，完成后关闭窗口…")); return;
     }
@@ -288,9 +325,10 @@ void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
     if (!worker_ && event->mimeData()->hasUrls()) event->acceptProposedAction();
 }
 void MainWindow::dropEvent(QDropEvent* event) {
+    // 忽略网页等非本地 URL，保持导入行为与文件选择器一致。
     QStringList paths;
     for (const auto& url : event->mimeData()->urls()) if (url.isLocalFile()) paths.push_back(url.toLocalFile());
     addPaths(paths); event->acceptProposedAction();
 }
-}
+} // namespace mif::desktop
 

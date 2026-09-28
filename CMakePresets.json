@@ -4,14 +4,16 @@
   "configurePresets": [
     {
       "name": "default",
-      "displayName": "Desktop / Release",
+      "displayName": "桌面程序 / Release",
+      "description": "构建 Qt 桌面程序和 C++ 核心库；本机依赖路径放入 CMakeUserPresets.json。",
       "binaryDir": "${sourceDir}/build/default",
       "cacheVariables": {"CMAKE_BUILD_TYPE": "Release", "MIF_BUILD_GUI": "ON"}
     },
     {
       "name": "core",
       "inherits": "default",
-      "displayName": "Core and tests",
+      "displayName": "核心算法与测试",
+      "description": "关闭 Qt 界面，仅构建算法库、示例与测试，便于独立验证核心模块。",
       "binaryDir": "${sourceDir}/build/core",
       "cacheVariables": {"MIF_BUILD_GUI": "OFF", "MIF_BUILD_TESTS": "ON"}
     }

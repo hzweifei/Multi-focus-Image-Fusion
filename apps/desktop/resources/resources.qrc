@@ -1,5 +1,8 @@
-<RCC><qresource prefix="/">
+<RCC>
+ <!-- 使用根前缀打包资源，代码通过 :/style.qss 和 :/icons/focus.svg 访问。 -->
+ <qresource prefix="/">
  <file>style.qss</file>
  <file>icons/focus.svg</file>
-</qresource></RCC>
+ </qresource>
+</RCC>
 

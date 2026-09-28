@@ -1,22 +1,43 @@
+# 顶层只负责构建开关、统一编译选项和模块装配；各模块管理自己的源文件与安装规则。
 cmake_minimum_required(VERSION 3.21)
 project(MultiFocusImageFusion VERSION 0.1.0 LANGUAGES CXX)
 
-option(MIF_BUILD_GUI "Build the Qt desktop application" ON)
-option(MIF_BUILD_PYTHON "Build the nanobind Python extension" OFF)
-option(MIF_BUILD_TESTS "Build regression tests" OFF)
-option(MIF_BUILD_EXAMPLES "Build the C++ example" ON)
+# 未启用的模块不会查找其专用依赖，因此仅编译算法时无需 Qt 或 Python。
+option(MIF_BUILD_GUI "构建 Qt 桌面程序" ON)
+option(MIF_BUILD_PYTHON "构建 nanobind Python 扩展" OFF)
+option(MIF_BUILD_TESTS "构建回归测试" OFF)
+option(MIF_BUILD_EXAMPLES "构建 C++ 调用示例" ON)
+option(MIF_BUILD_SHARED "将核心算法构建为动态库" ON)
+# pip/scikit-build-core 有自己的临时安装目录，不能把 wheel 的构建写进日常交付目录。
+if(SKBUILD)
+    set(_mif_stage_default OFF)
+else()
+    set(_mif_stage_default ON)
+endif()
+option(MIF_STAGE_OUTPUTS "完整构建后自动整理 outputs 交付目录" ${_mif_stage_default})
+set(MIF_OUTPUT_ROOT "${PROJECT_SOURCE_DIR}/outputs" CACHE PATH "交付根目录；不同构建配置分别存放")
+# Visual Studio 在构建时选择配置；Ninja/Make 等单配置生成器默认使用 Release。
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build configuration" FORCE)
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# 静态库可能被 Python 扩展等动态模块链接，统一启用位置无关代码。
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+# 将开发用可执行文件和核心 DLL 放在一起，方便 Windows 测试进程加载；交付副本另行安装。
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
 if(MSVC)
+    # 源文件统一按 UTF-8 编译，保证中文界面、字符串与注释不受系统代码页影响。
     add_compile_options(/utf-8 /W4)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+# 先定义依赖与公共安装函数，再按“核心 → 调用方 → 测试”的方向添加模块。
 include(cmake/Dependencies.cmake)
+include(cmake/Deliverables.cmake)
 add_subdirectory(ext)
 add_subdirectory(algorithms)
 if(MIF_BUILD_GUI)
@@ -32,4 +53,7 @@ if(MIF_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+# 所有目标定义完毕后，再创建自动交付目标及可选的 wheel 打包目标。
+mif_add_output_targets()
 

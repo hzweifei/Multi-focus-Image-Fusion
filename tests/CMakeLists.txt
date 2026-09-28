@@ -1,7 +1,11 @@
-add_executable(mif_tests test_fusion.cpp test_focus_measure.cpp)
+# 测试使用自身的检查函数，Release 下也会执行断言逻辑，不依赖额外测试框架。
+# 清晰度函数属于 DLL 私有实现，单独编译其源码供内部单元测试使用，不对 SDK 导出。
+add_executable(mif_tests test_fusion.cpp test_focus_measure.cpp
+    "${PROJECT_SOURCE_DIR}/algorithms/src/focus_measure.cpp")
 target_include_directories(mif_tests PRIVATE "${PROJECT_SOURCE_DIR}/algorithms/src")
 target_link_libraries(mif_tests PRIVATE mif::core)
 foreach(case focus quality identity validation weights cancellation alignment large_stack)
+    # 每个场景单独注册，CTest 可以精确指出哪个算法性质发生退化。
     add_test(NAME core.${case} COMMAND mif_tests ${case})
 endforeach()
 
@@ -9,11 +13,13 @@ if(MIF_BUILD_GUI)
     add_executable(mif_gui_tests test_desktop.cpp)
     target_link_libraries(mif_gui_tests PRIVATE mif_desktop_ui)
     add_test(NAME desktop.workflow COMMAND mif_gui_tests)
+    # 使用真实 Qt 事件循环和后台线程，但无需屏幕窗口或人工操作。
     set_tests_properties(desktop.workflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
 endif()
 
 if(MIF_BUILD_PYTHON)
+    # 验证开发树里的扩展；测试脚本据此注册核心 DLL 所在目录。
     add_test(NAME python.bindings COMMAND "${Python_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/bindings/python/tests/test_fusion.py")
-    set_tests_properties(python.bindings PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python" TIMEOUT 60)
+    set_tests_properties(python.bindings PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python;MIF_TEST_DLL_DIRS=$<TARGET_FILE_DIR:mif_core>" TIMEOUT 60)
 endif()
-

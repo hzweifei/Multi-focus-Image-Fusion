@@ -6,9 +6,13 @@
 #include <iostream>
 #include <limits>
 #include <map>
+
+// 核心算法回归测试入口；CTest 通过用例名分别运行，失败原因可独立定位。
 void testFocusMeasure();
 namespace {
 const std::vector<mif::FusionMethod> methods{mif::FusionMethod::GuidedFilter, mif::FusionMethod::LaplacianPyramid};
+
+// 互补清晰区域应被恢复：融合误差明显低于任一源图，并保持尺寸和顺序对称性。
 void quality() {
     for (int channels : {1, 3}) {
         auto sharp = texture();
@@ -30,6 +34,9 @@ void quality() {
         }
     }
 }
+
+// 相同图像重复输入时保持像素、位深和通道，且不修改源数据。
+// 同时覆盖浮点范围端点、小图，以及请求层数超过图像可建金字塔层数的情况。
 void identity() {
     for (float value : {0.0f, 1.0f}) {
         const cv::Mat boundary(4, 5, CV_32FC3, cv::Scalar::all(value));
@@ -54,6 +61,8 @@ void identity() {
         }
     }
 }
+
+// 核心必须拒绝非法图像与参数，并使用 invalid_argument 明确区分输入错误。
 void validation() {
     const auto image = texture();
     auto rejects = [](const std::function<void()>& call) {
@@ -75,6 +84,8 @@ void validation() {
     rejects([&] { mif::FusionOptions o; o.pyramid_levels = 0; mif::fuse({image, image}, o); });
     rejects([&] { mif::FusionOptions o; o.method = static_cast<mif::FusionMethod>(99); mif::fuse({image, image}, o); });
 }
+
+// 常量图像没有清晰度差异，应等权平均；保留的权重须非负且逐像素和为 1。
 void weights() {
     cv::Mat a(39, 57, CV_16U, cv::Scalar(10000)), b(39, 57, CV_16U, cv::Scalar(50000));
     for (auto method : methods) {
@@ -87,6 +98,8 @@ void weights() {
         require(mae(result.image, cv::Mat(a.size(), CV_16U, cv::Scalar(30000))) <= 1, "Flat image ties should average");
     }
 }
+
+// 回调返回 false 时抛出 Cancelled；正常执行时进度单调前进并最终到达 100。
 void cancellation() {
     const auto images = focusStack(texture());
     int last = -1;
@@ -99,6 +112,9 @@ void cancellation() {
     });
     require(last == 100, "Missing completion progress");
 }
+
+// 用已知变换合成第二张图，检查配准矩阵方向、位移量和共同有效区域裁剪。
+// 无纹理输入不能可靠估计配准，应明确失败，避免返回看似成功的无效矩阵。
 void alignment() {
     const auto image = texture(161, 241);
     for (auto mode : {mif::Alignment::Translation, mif::Alignment::Affine}) {
@@ -119,6 +135,8 @@ void alignment() {
     try { mif::fuse({flat, flat}, o); } catch (const std::runtime_error&) { failed = true; }
     require(failed, "Textureless alignment must fail explicitly");
 }
+
+// 第 257 张图拥有唯一纹理，获胜索引应为 256，确保索引没有被截断到 8 位。
 void largeStack() {
     std::vector<cv::Mat> images(257, cv::Mat::zeros(13, 15, CV_8U));
     images.back() = texture(13, 15);

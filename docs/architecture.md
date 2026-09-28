@@ -5,11 +5,13 @@ algorithms/       C++ 算法库，include/mif 为公开接口，src 为内部实
 apps/desktop/     Qt Widgets 桌面程序、图片读写、预览和后台任务
 bindings/python/  nanobind 扩展、Python 包和接口测试
 ext/              固定版本的第三方 Git 子模块
-cmake/            第三方依赖查找
+cmake/            第三方依赖查找、SDK 配置和交付文件整理
 tests/            C++ 算法与桌面程序回归测试
 examples/         C++ 与 Python 调用示例
 data/samples/     测试图片说明
 docs/             架构、算法、构建和参考来源
+build/            本机构建中间文件，不纳入版本控制
+outputs/          按配置整理的 Qt 程序、Python 包、C++ SDK 和示例
 ```
 
 依赖方向：`mif_desktop → mif_desktop_ui → mif_core → OpenCV`；
@@ -67,6 +69,38 @@ Qt Designer 的 `main_window.ui` 定义主窗口外框；控件、信号和布�
 ## 第三方依赖
 
 `ext/nanobind` 固定版本，只有开启 Python 绑定时才加入构建。Qt 和 OpenCV 由
-已有开发环境提供。`mif_core` 构建成静态库，可从父项目通过 `add_subdirectory`
-使用 `mif::core` 目标；当前未提供安装后的 CMake package 配置。
+已有开发环境提供。`mif_core` 默认构建动态库，也可通过 `MIF_BUILD_SHARED=OFF`
+构建静态库。父项目可通过 `add_subdirectory` 使用 `mif::core`，或使用交付 SDK
+中的 `find_package(Mif CONFIG REQUIRED)`。构建后自动整理到 `outputs/<配置>/`，
+详情见 [交付目录](outputs.md)。
+
+## 阅读顺序与中文注释
+
+建议先读 `algorithms/include/mif/options.hpp` 和 `fusion.hpp`，了解参数范围、
+图像类型、结果坐标系、回调与异常约定；再读 `algorithms/src/fusion.cpp`，
+它串起预处理、配准、清晰度、权重和重建步骤。
+
+自有代码采用以下注释方式：
+
+- 公开接口说明输入、输出、参数范围和重要前置条件。
+- 算法实现说明公式、坐标变换、边界和数值处理的原因。
+- Qt 代码说明信号槽在哪个线程执行，以及窗口、工作线程、图像数据的生命周期。
+- Python 绑定说明 GIL、数组布局、颜色顺序、复制与共享内存的边界。
+- 测试说明它验证的性质，构建脚本说明依赖关系和构建/安装阶段的区别。
+
+JSON 预设文件通过 `description` 字段解释用途，避免使用 JSON 不支持的注释语法。
+生成文件和第三方子模块保留工具或上游的内容。
+
+## 已做的结构精简
+
+1. Python 扩展入口合并到 `bind_fusion.cpp`，去掉只负责转发的 `module.cpp`。
+   数组转换继续独立，便于检查 dtype、连续性及内存生命周期。
+2. Qt 主窗口的构造流程分为布局创建和信号连接等独立方法，使窗口初始化便于阅读。
+3. `mif_install_runtime` 统一处理核心库和第三方运行依赖，并从 CMake 目标类型推导
+   扫描方式。调用方不再重复传递目标类别或分别调用两个运行库安装函数。
+
+以下拆分继续保留：算法的清晰度、权重、融合和配准模块各有独立职责；
+`mif_desktop_ui` 静态库让应用与测试复用窗口实现；`Deliverables.cmake` 负责构建时
+定义安装规则，`RuntimeDependencies.cmake` 负责安装时扫描实际 DLL。
+保留这些边界能减少功能之间的相互影响，当前无需增加更多目录或通用框架。
 
