@@ -15,8 +15,11 @@ if(MIF_BUILD_GUI)
     add_executable(mif_gui_tests test_desktop.cpp)
     target_link_libraries(mif_gui_tests PRIVATE mif_desktop_ui)
     add_test(NAME desktop.workflow COMMAND mif_gui_tests)
+    add_executable(mif_image_view_tests test_image_view.cpp)
+    target_link_libraries(mif_image_view_tests PRIVATE mif_desktop_ui)
+    add_test(NAME desktop.preview COMMAND mif_image_view_tests)
     # 使用真实 Qt 事件循环和后台线程，但无需屏幕窗口或人工操作。
-    set_tests_properties(desktop.workflow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+    set_tests_properties(desktop.workflow desktop.preview PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
 endif()
 
 if(MIF_BUILD_PYTHON)

@@ -10,6 +10,7 @@
 #include <QDragEnterEvent>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFontMetrics>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QLabel>
@@ -19,6 +20,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QVBoxLayout>
@@ -64,6 +66,7 @@ void MainWindow::createSidebar() {
     auto* imports = new QHBoxLayout;
     add_ = new QPushButton(QStringLiteral("添加图片"));
     folder_ = new QPushButton(QStringLiteral("导入文件夹"));
+    folder_->setToolTip(QStringLiteral("将所选文件夹作为新对焦批次，替换当前图片列表和融合结果。"));
     imports->addWidget(add_); imports->addWidget(folder_);
     side->addLayout(imports);
     files_ = new QListWidget;
@@ -125,6 +128,7 @@ void MainWindow::createPreviewArea() {
     heading->setObjectName("sectionTitle");
     toolbar->addWidget(heading); toolbar->addStretch();
     auto* fit = new QPushButton(QStringLiteral("适应窗口"));
+    fit->setObjectName("fitPreviews");
     save_ = new QPushButton(QStringLiteral("导出结果"));
     save_->setObjectName("saveButton");
     toolbar->addWidget(fit); toolbar->addWidget(save_);
@@ -139,14 +143,18 @@ void MainWindow::createPreviewArea() {
         layout->addWidget(label);
         view = new ImageView; layout->addWidget(view, 1);
         info = new QLabel(QStringLiteral("等待图片")); info->setObjectName("muted"); info->setWordWrap(true);
+        // 两侧都预留名称与属性两行，避免说明行数不同把并排预览上下错开。
+        info->setMinimumHeight(info->fontMetrics().lineSpacing() * 2);
         layout->addWidget(info);
         previews->addWidget(panel);
     };
     addPreview(QStringLiteral("输入图像"), source_view_, source_info_);
     addPreview(QStringLiteral("全聚焦结果"), result_view_, result_info_);
+    source_view_->setObjectName("sourcePreview");
+    result_view_->setObjectName("resultPreview");
     previews->setChildrenCollapsible(false);
     workspace->addWidget(previews, 1);
-    auto* tip = new QLabel(QStringLiteral("滚轮缩放 · 拖动平移 · 双击适应窗口 · 可拖入图片或文件夹"));
+    auto* tip = new QLabel(QStringLiteral("两侧预览联动：滚轮缩放 · 拖动平移 · 双击适应窗口\n拖入图片可追加，拖入文件夹会切换为新批次。"));
     tip->setObjectName("muted"); workspace->addWidget(tip);
     status_ = new QLabel(QStringLiteral("添加至少两张不同焦点的图片，即可开始。"));
     status_->setWordWrap(true); workspace->addWidget(status_);
@@ -155,10 +163,14 @@ void MainWindow::createPreviewArea() {
     ui_->workspaceLayout->addLayout(workspace, 1);
 
     // 适应窗口按钮只与本区域有关，无需保存为窗口成员。
-    connect(fit, &QPushButton::clicked, this, [this] { source_view_->fitImage(); result_view_->fitImage(); });
+    connect(fit, &QPushButton::clicked, source_view_, &ImageView::fitImage);
 }
 
 void MainWindow::connectActions() {
+    // 传递相对倍率和图像中的相对中心，兼容面板大小不同和配准后结果裁剪。
+    // 接收端只应用状态、不再发送导航信号，因此双向连接不会互相回调。
+    connect(source_view_, &ImageView::viewChanged, result_view_, &ImageView::applyViewState);
+    connect(result_view_, &ImageView::viewChanged, source_view_, &ImageView::applyViewState);
     // 所有导入方式复用 addPaths，统一完成过滤、排序、去重和结果失效处理。
     connect(add_, &QPushButton::clicked, this, [this] {
         addPaths(QFileDialog::getOpenFileNames(this, QStringLiteral("选择不同焦点的图片"), lastFolder(), imageFilter));
@@ -187,12 +199,15 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::addPaths(const QStringList& paths) {
-    if (worker_) return;
+    if (worker_ || paths.isEmpty()) return;
     // 文件夹仅导入当前层可读图片，避免隐式递归收集其他场景。
     QStringList expanded;
+    QString batch_folder;
     for (const auto& path : paths) {
         const QFileInfo info(path);
         if (info.isDir()) {
+            // 同次拖入多个目录或混合文件时，整体作为一个新批次，只清空一次。
+            if (batch_folder.isEmpty()) batch_folder = info.absoluteFilePath();
             for (const auto& file : QDir(path).entryInfoList(QDir::Files | QDir::Readable))
                 if (supported(file.filePath())) expanded.push_back(file.absoluteFilePath());
         } else if (info.isFile() && supported(path)) expanded.push_back(info.absoluteFilePath());
@@ -202,22 +217,39 @@ void MainWindow::addPaths(const QStringList& paths) {
     std::sort(expanded.begin(), expanded.end(), [&collator](const QString& a, const QString& b) {
         return collator.compare(a, b) < 0;
     });
-    // 保留此前已添加的顺序，只对本次输入排序；绝对路径用于识别重复条目。
+    const bool replace_batch = !batch_folder.isEmpty();
+    const bool refresh_preview = replace_batch || !files_->currentItem();
     int added = 0;
-    for (const auto& path : expanded) {
-        bool exists = false;
-        for (int i = 0; i < files_->count(); ++i)
-            if (files_->item(i)->data(Qt::UserRole).toString() == path) { exists = true; break; }
-        if (exists) continue;
-        auto* item = new QListWidgetItem(QFileInfo(path).fileName(), files_);
-        item->setData(Qt::UserRole, path); item->setToolTip(path); ++added;
+    {
+        // 批量更新时不预览中间条目；列表、结果和选中图片在导入结束后一起更新。
+        const QSignalBlocker blocker(files_);
+        if (replace_batch) files_->clear();
+        // 单独添加文件时保留原列表顺序；绝对路径用于识别新旧条目中的重复文件。
+        for (const auto& path : expanded) {
+            bool exists = false;
+            for (int i = 0; i < files_->count(); ++i)
+                if (files_->item(i)->data(Qt::UserRole).toString() == path) { exists = true; break; }
+            if (exists) continue;
+            auto* item = new QListWidgetItem(QFileInfo(path).fileName(), files_);
+            item->setData(Qt::UserRole, path); item->setToolTip(path); ++added;
+        }
+        if (refresh_preview && files_->count() > 0) files_->setCurrentRow(0);
     }
-    if (added) {
+    if (added || replace_batch) {
         clearResult();
-        QSettings().setValue("lastFolder", QFileInfo(expanded.front()).absolutePath());
-        status_->setText(QStringLiteral("已添加 %1 张图片。第一张将作为配准参考。未读取的文件将在融合时检查。").arg(added));
-        if (!files_->currentItem()) files_->setCurrentRow(0);
-    } else if (!paths.isEmpty()) status_->setText(QStringLiteral("没有新的受支持图片可导入。"));
+        if (refresh_preview) previewSelected();
+        if (replace_batch) {
+            // 新批次同时恢复两侧整图视野，避免沿用上一批次的局部放大位置。
+            source_view_->fitImage();
+            QSettings().setValue("lastFolder", batch_folder);
+            status_->setText(added > 0
+                ? QStringLiteral("已切换到新批次，共 %1 张图片。第一张将作为配准参考。未读取的文件将在融合时检查。").arg(added)
+                : QStringLiteral("所选文件夹中没有受支持的图片，已清空上一批次。"));
+        } else {
+            QSettings().setValue("lastFolder", QFileInfo(expanded.front()).absolutePath());
+            status_->setText(QStringLiteral("已添加 %1 张图片。第一张将作为配准参考。未读取的文件将在融合时检查。").arg(added));
+        }
+    } else status_->setText(QStringLiteral("没有新的受支持图片可导入。"));
     updateControls();
 }
 
@@ -227,11 +259,13 @@ void MainWindow::previewSelected() {
     try {
         // 显示副本拥有独立像素内存，因此离开此作用域后仍可安全显示。
         const auto image = readImage(item->data(Qt::UserRole).toString());
-        source_view_->setImage(previewImage(image));
+        // 切换同批次的输入图片时保留对比位置，便于逐张观察同一局部的清晰度。
+        source_view_->setImage(previewImage(image), true);
         source_info_->setText(QStringLiteral("%1\n%2 × %3 · %4 位 · %5 通道")
             .arg(item->text()).arg(image.cols).arg(image.rows).arg(image.elemSize1() * 8).arg(image.channels()));
     } catch (const std::exception& error) {
-        source_view_->setImage({}); source_info_->setText(QString::fromUtf8(error.what()));
+        // 单张图片读取失败时保留当前对比视野，下一张可读图片仍回到相同局部。
+        source_view_->setImage({}, true); source_info_->setText(QString::fromUtf8(error.what()));
     }
 }
 
@@ -284,7 +318,11 @@ void MainWindow::startFusion() {
     });
     connect(worker_, &FusionWorker::completed, this, [this](const cv::Mat& image, const QString& summary) {
         // cv::Mat 的引用计数保留结果像素；工作线程此后不再修改该缓冲区。
-        result_ = image; result_view_->setImage(previewImage(result_)); result_info_->setText(summary);
+        result_ = image;
+        result_view_->setImage(previewImage(result_), true);
+        // 计算期间用户仍可浏览源图；新结果沿用此刻的对比视野。
+        result_view_->applyViewState(source_view_->viewState());
+        result_info_->setText(QStringLiteral("融合结果\n%1").arg(summary));
         status_->setText(QStringLiteral("融合完成，可导出结果。自动配准开启时，结果已裁剪为共有区域。"));
         emit fusionCompleted();
     });

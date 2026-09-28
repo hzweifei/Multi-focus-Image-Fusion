@@ -28,7 +28,9 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
     /// 销毁前确保后台线程已退出，避免线程继续访问已释放的窗口数据。
     ~MainWindow() override;
-    /// 导入文件或文件夹（仅展开一层），自然排序并去重；运行中不接受新输入。
+    /// 文件追加到当前列表；包含文件夹时，以本次导入整体替换旧批次。
+    /// 文件夹仅展开一层，统一自然排序并去重；空目录也替换，取消选择不改变当前批次。
+    /// 运行中不接受新输入。
     void addPaths(const QStringList& paths);
     /// 返回保留原始位深的融合结果；引用仅在窗口存活且结果未清空时有效。
     const cv::Mat& resultImage() const { return result_; }
