@@ -28,7 +28,9 @@ void bindFusion(nb::module_& module) {
     nb::enum_<mif::Alignment>(module, "Alignment")
         .value("NONE", mif::Alignment::None)
         .value("TRANSLATION", mif::Alignment::Translation)
-        .value("AFFINE", mif::Alignment::Affine);
+        .value("AFFINE", mif::Alignment::Affine)
+        .value("FEATURE_HOMOGRAPHY", mif::Alignment::FeatureHomography)
+        .value("ECC_HOMOGRAPHY", mif::Alignment::EccHomography);
     // 直接暴露参数字段；默认值和有效范围以核心 FusionOptions 定义为准。
     // run 中复制参数快照，避免释放 GIL 后其他 Python 线程改动本次任务参数。
     nb::class_<mif::FusionOptions>(module, "FusionOptions")
@@ -45,6 +47,15 @@ void bindFusion(nb::module_& module) {
         .def_rw("alignment_iterations", &mif::FusionOptions::alignment_iterations)
         .def_rw("alignment_epsilon", &mif::FusionOptions::alignment_epsilon)
         .def_rw("alignment_max_size", &mif::FusionOptions::alignment_max_size)
+        // 特征匹配参数保留核心的数值范围检查；界面与 Python 使用同一套默认值。
+        .def_rw("alignment_max_features", &mif::FusionOptions::alignment_max_features,
+            "SIFT 特征点上限，范围 [64, 100000]，默认 4000。")
+        .def_rw("alignment_match_ratio", &mif::FusionOptions::alignment_match_ratio,
+            "最近邻/次近邻描述子距离比阈值，范围 (0, 1)，默认 0.75。")
+        .def_rw("alignment_ransac_threshold", &mif::FusionOptions::alignment_ransac_threshold,
+            "RANSAC 重投影误差阈值，单位为工作分辨率像素，有限正数，默认 3.0。")
+        .def_rw("alignment_min_inlier_ratio", &mif::FusionOptions::alignment_min_inlier_ratio,
+            "RANSAC 内点占有效匹配的最小比例，范围 (0, 1]，默认 0.25。")
         .def_rw("keep_weight_maps", &mif::FusionOptions::keep_weight_maps);
     // 简单接口仅返回融合图像；临时结果销毁后，toArray 的 capsule 继续持有像素。
     module.def("fuse", [](const std::vector<mif::python::InputArray>& arrays, const mif::FusionOptions& options) {
@@ -58,6 +69,7 @@ void bindFusion(nb::module_& module) {
         output["image"] = mif::python::toArray(result.image);
         output["focus_indices"] = mif::python::toArray(result.focus_indices);
         // crop 使用第一张输入图像坐标；变换矩阵将参考坐标映射到各源图像坐标。
+        // 未配准/平移/仿射保持 2×3；两种单应性模式返回 3×3，需做齐次坐标除法。
         output["crop"] = nb::make_tuple(result.crop.x, result.crop.y, result.crop.width, result.crop.height);
         nb::list weights, transforms;
         for (const auto& weight : result.weights) weights.append(mif::python::toArray(weight));

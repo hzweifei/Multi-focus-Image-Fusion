@@ -39,3 +39,5 @@ cv::Mat combine(const std::vector<cv::Mat>& images) {
 Windows 运行时将 `bin/` 中的 DLL 复制到调用程序旁边，或将 SDK 的 `bin/` 加入
 该程序的 DLL 搜索路径。`mif_core.lib` 只用于链接，不能替代运行时 DLL。
 通过 `mif::core` 链接时会自动传递头文件路径和依赖信息。
+MSVC 下还会传递 `/utf-8`，以正确读取公开头文件中的中文注释；调用方源码也应使用 UTF-8。
+升级 SDK 后应使用同一份新头文件与新库重新编译调用方，尤其是 `FusionOptions` 增加字段时。

@@ -1,10 +1,14 @@
 #include <mif/fusion.hpp>
-#include "blending.hpp"
-#include "focus_measure.hpp"
-#include "registration.hpp"
-#include "weight_map.hpp"
+#include "common/progress.hpp"
+#include "fusion/fusion.hpp"
+#include "fusion/weight_map.hpp"
+#include "registration/registration.hpp"
 #include <cmath>
 #include <limits>
+#include <utility>
+
+// 公开 fuse() 的完整处理流程：校验 → 归一化 → 配准 → 融合 → 整理输出。
+// 具体方法及其工具集中在对应子目录，阅读算法库时可从本文件进入。
 
 namespace mif {
 namespace {
@@ -18,7 +22,9 @@ void validate(const std::vector<cv::Mat>& images, const FusionOptions& o) {
         throw std::invalid_argument("Unknown fusion method");
     if (o.focus_measure != FocusMeasure::ModifiedLaplacian && o.focus_measure != FocusMeasure::Tenengrad)
         throw std::invalid_argument("Unknown focus measure");
-    if (o.alignment != Alignment::None && o.alignment != Alignment::Translation && o.alignment != Alignment::Affine)
+    if (o.alignment != Alignment::None && o.alignment != Alignment::Translation &&
+        o.alignment != Alignment::Affine && o.alignment != Alignment::FeatureHomography &&
+        o.alignment != Alignment::EccHomography)
         throw std::invalid_argument("Unknown alignment method");
     // 限定窗口、层数和迭代次数，避免异常配置造成过量计算；正则项必须有限且大于零。
     if (o.focus_window < 1 || o.focus_window > 255 || o.focus_window % 2 == 0 ||
@@ -28,7 +34,11 @@ void validate(const std::vector<cv::Mat>& images, const FusionOptions& o) {
         o.pyramid_levels < 1 || o.pyramid_levels > 16 ||
         o.alignment_iterations < 1 || o.alignment_iterations > 10000 ||
         !std::isfinite(o.alignment_epsilon) || o.alignment_epsilon <= 0 ||
-        o.alignment_max_size < 16 || o.alignment_max_size > 8192)
+        o.alignment_max_size < 16 || o.alignment_max_size > 8192 ||
+        o.alignment_max_features < 64 || o.alignment_max_features > 100000 ||
+        !std::isfinite(o.alignment_match_ratio) || o.alignment_match_ratio <= 0 || o.alignment_match_ratio >= 1 ||
+        !std::isfinite(o.alignment_ransac_threshold) || o.alignment_ransac_threshold <= 0 ||
+        !std::isfinite(o.alignment_min_inlier_ratio) || o.alignment_min_inlier_ratio <= 0 || o.alignment_min_inlier_ratio > 1)
         throw std::invalid_argument("Invalid fusion options; check window, radius, levels and epsilon");
     for (const auto& image : images) {
         if (image.empty() || image.dims != 2 || image.rows < 2 || image.cols < 2)
@@ -63,45 +73,19 @@ FusionResult fuse(const std::vector<cv::Mat>& inputs, const FusionOptions& optio
         images.push_back(normalized);
     }
     FusionResult result;
-    detail::alignImages(images, options, result, progress);
+    detail::registration::alignImages(images, options, result, progress);
 
-    // 彩色图仅用灰度计算清晰度和引导权重；融合阶段仍保留原来的全部颜色通道。
-    std::vector<cv::Mat> guides, scores;
-    for (size_t i = 0; i < images.size(); ++i) {
-        detail::report(progress, 30 + static_cast<int>(20 * i / images.size()), "focus");
-        guides.push_back(detail::grayscale(images[i]));
-        scores.push_back(detail::focusMeasure(guides.back(), options.focus_measure, options.focus_window));
-    }
-    auto decisions = detail::decisionWeights(scores);
-    // 决策图生成后不再需要清晰度响应，及时释放引用以降低多图融合的峰值内存。
-    scores.clear();
-    std::vector<cv::Mat> base_weights, detail_weights;
-    for (size_t i = 0; i < images.size(); ++i) {
-        detail::report(progress, 50 + static_cast<int>(20 * i / images.size()), "weights");
-        // 基础层使用较平滑的权重，细节层使用更贴近图像边缘的权重。
-        // 金字塔方法直接从细节权重构建各尺度权重，因此不计算基础权重。
-        if (options.method == FusionMethod::GuidedFilter)
-            base_weights.push_back(detail::guidedFilter(guides[i], decisions[i], options.base_radius, options.base_epsilon));
-        detail_weights.push_back(detail::guidedFilter(guides[i], decisions[i], options.detail_radius, options.detail_epsilon));
-    }
-    decisions.clear();
-    // 每张图的权重独立滤波后，总和不再严格为 1，必须跨输入重新归一化。
-    detail::normalizeWeights(detail_weights);
-    cv::Mat output;
-    if (options.method == FusionMethod::GuidedFilter) {
-        detail::normalizeWeights(base_weights);
-        output = detail::blendGuided(images, base_weights, detail_weights, options.base_radius, progress);
-    } else {
-        output = detail::blendPyramid(images, detail_weights, options.pyramid_levels, progress);
-    }
+    // 各融合方法独立完成权重生成和图像重建；公共入口只整理最终图像与诊断信息。
+    // 方法返回已归一化的细节权重，保证来源索引与 keep_weight_maps 使用同一组数据。
+    auto fused = detail::fusion::run(images, options, progress);
     detail::report(progress, 97, "finish");
     // 分层重建可能在强边缘附近产生越界值；先裁到有效区间，再恢复输入的位深。
-    cv::max(output, 0, output);
-    cv::min(output, 1, output);
-    output.convertTo(result.image, inputs.front().type(), range);
+    cv::max(fused.image, 0, fused.image);
+    cv::min(fused.image, 1, fused.image);
+    fused.image.convertTo(result.image, inputs.front().type(), range);
     // 来源索引以最终细节权重为准；只有显式请求时才让结果持有整组权重图。
-    result.focus_indices = detail::dominantIndices(detail_weights);
-    if (options.keep_weight_maps) result.weights = std::move(detail_weights);
+    result.focus_indices = detail::fusion::dominantIndices(fused.weights);
+    if (options.keep_weight_maps) result.weights = std::move(fused.weights);
     detail::report(progress, 100, "done");
     return result;
 }

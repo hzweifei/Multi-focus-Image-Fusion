@@ -37,9 +37,11 @@ struct FusionResult {
     std::vector<cv::Mat> weights;
     /// 输出区域在第一张原始输入图像中的坐标；未配准时为整幅图像。
     cv::Rect crop;
-    /// 每张输入对应一个 2×3 CV_32F 仿射矩阵，将参考图坐标映射到该输入坐标。
+    /// 每张输入对应一个 CV_32F 矩阵，将参考图坐标映射到该输入坐标。
+    /// None/Translation/Affine 保留 2×3 格式；FeatureHomography/EccHomography 为 3×3。
     /// 矩阵使用裁剪前的原始像素坐标；第一张图及未配准的图像均为单位变换。
     /// 将输出像素映射回输入时，应先加上 crop 的左上角偏移，再应用此矩阵。
+    /// 对 3×3 矩阵，应将 [x, y, 1] 相乘后用前两项除以第三项，得到源图像素坐标。
     std::vector<cv::Mat> transforms;
 };
 
@@ -51,9 +53,9 @@ struct FusionResult {
  * @param options 算法、滤波和配准参数，范围见 FusionOptions。
  * @param progress 可选的同步进度回调；空回调表示不报告进度、不请求取消。
  * @return 融合图、来源索引及配准信息；配准后仅保留所有输入均有效的最大轴对齐矩形。
- * @throws std::invalid_argument 输入或参数无效，或 ECC 缩小后的图像不足 16×16。
- * @throws std::runtime_error 配准无法收敛、参考图缺乏纹理或公共区域不足 8×8。
- * @throws cv::Exception OpenCV 处理失败；ECC 求解异常会附加图像序号后转为 runtime_error。
+ * @throws std::invalid_argument 输入或参数无效，或配准缩小后的图像不足 16×16。
+ * @throws std::runtime_error 配准无法收敛、纹理/匹配不足、变换退化或公共区域不足 8×8。
+ * @throws cv::Exception OpenCV 处理失败；配准求解异常会附加图像序号后转为 runtime_error。
  * @throws Cancelled 进度回调请求取消。
  *
  * 本函数同步执行，不修改输入。调用期间应保持输入缓冲区有效，且不要从其他线程修改。

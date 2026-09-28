@@ -70,7 +70,7 @@ private:
     // Designer 文件只提供窗口外壳；其余控件由两个创建函数填入 workspaceLayout。
     std::unique_ptr<Ui::MainWindow> ui_;
 
-    // 输入列表和算法参数。下拉框的索引与核心库枚举值保持一致。
+    // 输入列表和算法参数。下拉框条目数据保存核心枚举，不依赖显示顺序。
     QListWidget* files_;
     QComboBox* method_;
     QComboBox* focus_;

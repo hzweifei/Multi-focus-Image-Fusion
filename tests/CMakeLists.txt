@@ -1,10 +1,12 @@
 # 测试使用自身的检查函数，Release 下也会执行断言逻辑，不依赖额外测试框架。
 # 清晰度函数属于 DLL 私有实现，单独编译其源码供内部单元测试使用，不对 SDK 导出。
-add_executable(mif_tests test_fusion.cpp test_focus_measure.cpp
-    "${PROJECT_SOURCE_DIR}/algorithms/src/focus_measure.cpp")
+# 同一源文件的焦点评估流程还依赖权重工具，因此一起编译，保持私有符号的链接完整。
+add_executable(mif_tests test_fusion.cpp test_focus_measure.cpp test_registration.cpp
+    "${PROJECT_SOURCE_DIR}/algorithms/src/fusion/focus_measure.cpp"
+    "${PROJECT_SOURCE_DIR}/algorithms/src/fusion/weight_map.cpp")
 target_include_directories(mif_tests PRIVATE "${PROJECT_SOURCE_DIR}/algorithms/src")
 target_link_libraries(mif_tests PRIVATE mif::core)
-foreach(case focus quality identity validation weights cancellation alignment large_stack)
+foreach(case focus quality identity validation weights cancellation alignment registration_homography registration_ecc registration_failure large_stack)
     # 每个场景单独注册，CTest 可以精确指出哪个算法性质发生退化。
     add_test(NAME core.${case} COMMAND mif_tests ${case})
 endforeach()

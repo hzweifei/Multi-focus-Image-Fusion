@@ -3,7 +3,7 @@
 ## 环境
 
 - C++17 编译器，例如 Visual Studio 2022、GCC 或 Clang。
-- CMake 3.21+，OpenCV 4 开发包（core、imgproc、imgcodecs、video）。
+- CMake 3.21+，OpenCV 4.4+ 开发包（core、imgproc、imgcodecs、video、features2d、calib3d）。
 - 桌面应用：Qt 6 Widgets 或 Qt 5.15 Widgets。
 - 可选 Python 绑定：Python 3.9+ 开发文件和 NumPy。
 

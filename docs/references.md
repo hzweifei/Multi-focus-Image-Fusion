@@ -4,6 +4,13 @@
   图像栈导入、原图/结果对照及后台处理交互。
 - [OpenFocus GFF](https://github.com/Xinzhe99/OpenFocus/blob/main/fusion_methods/gff.py)：
   参考基础层/细节层分解和分别细化权重的组织方式。本项目使用独立 C++ 模块实现。
+- OpenFocus 还提供 [DCT](https://github.com/Xinzhe99/OpenFocus/blob/main/fusion_methods/dct.py)、
+  [DTCWT](https://github.com/Xinzhe99/OpenFocus/blob/main/fusion_methods/dtcwt.py) 和
+  [GFG-FGF](https://github.com/Xinzhe99/OpenFocus/blob/main/fusion_methods/gfg_fgf.py)。
+  这些传统方法尚未接入本项目；本项目的拉普拉斯金字塔融合为额外实现。
+- [OpenFocus 配准](https://github.com/Xinzhe99/OpenFocus/blob/455e0f0217e93e5df45fbaeb7a9bb94c9649f22a/core/registration.py)：
+  参考 SIFT 匹配 + RANSAC 和 ECC 两种求解路线。本项目分别放在独立 C++ 文件中，
+  直接配准到第一张、共享掩码裁剪，并明确拒绝失败结果；尚未实现上游的组合模式。
 - S. Li, X. Kang, J. Hu, *Image fusion with guided filtering*, IEEE Transactions on
   Image Processing, 22(7), 2864–2875, 2013（OpenFocus 引用的算法文献）。
 - [OpenCV ECC 文档](https://docs.opencv.org/4.x/dc/d6b/group__video__track.html)：

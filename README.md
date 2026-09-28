@@ -7,7 +7,7 @@
 
 - 引导滤波双尺度融合、拉普拉斯金字塔融合。
 - 改进拉普拉斯和 Tenengrad 清晰度指标。
-- 可选 ECC 平移 / 仿射配准，裁剪共同有效区域。
+- 可选 SIFT + RANSAC 单应性配准，以及 ECC 平移 / 仿射 / 单应性配准，裁剪共同有效区域。
 - 灰度 / BGR，8 位、16 位无符号整数和 `[0, 1]` float32 输入。
 - Qt 中文界面：图片与文件夹导入、拖放、原图与结果预览、缩放平移、参数设置、
   后台处理、进度、取消和导出。
@@ -21,7 +21,11 @@
 ## 目录
 
 ```text
-algorithms/       include/mif/ 公开接口 + src/ 算法实现
+algorithms/       独立 C++ 算法库，include/mif/ 为公开接口
+  src/pipeline.cpp   完整处理流程
+  src/common/        共用灰度转换与进度工具
+  src/fusion/        融合方法、清晰度计算与权重处理
+  src/registration/  配准方法与共同区域处理
 apps/desktop/     Qt 桌面应用
 bindings/python/  nanobind 扩展与 Python 包
 ext/              第三方 Git 子模块（nanobind）
@@ -32,9 +36,11 @@ data/samples/     示例数据说明
 docs/             架构、算法、构建和参考文档
 ```
 
+算法完整目录与阅读顺序见 [算法模块导航](algorithms/README.md)。
+
 ## 构建
 
-准备 CMake 3.21+、C++17 编译器、OpenCV 4 和 Qt 6 或 Qt 5.15 开发包。
+准备 CMake 3.21+、C++17 编译器、OpenCV 4.4+ 和 Qt 6 或 Qt 5.15 开发包。
 
 ```sh
 git submodule update --init --recursive
@@ -88,8 +94,8 @@ result = mif.fuse([image_near, image_far], options)  # NumPy；彩色为 BGR
 更多内容：[架构](docs/architecture.md) · [算法与参数](docs/algorithm.md) ·
 [验证记录](docs/verification.md) · [第三方声明](THIRD_PARTY_NOTICES.md)
 
-自有 C++、Python 和构建代码提供中文说明；建议从 `algorithms/include/mif/`
-的公开接口开始阅读。[代码阅读顺序与结构精简说明](docs/architecture.md#阅读顺序与中文注释)
+自有 C++、Python 和构建代码提供中文说明；建议按
+[算法模块导航](algorithms/README.md#阅读顺序) 从公开接口开始阅读。
 
 当前版本整栈驻留内存，尚未实现大图分块、批量任务、DCT/DTCWT/GFG-FGF 或安装包。
 实际显微和工业图像的效果仍需使用真实采集数据评估。

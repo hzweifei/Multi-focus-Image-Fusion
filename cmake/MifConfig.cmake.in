@@ -2,7 +2,7 @@
 @PACKAGE_INIT@
 include(CMakeFindDependencyMacro)
 # 公开 API 使用 cv::Mat，因此消费方需提供与 SDK 构建时相同版本的 OpenCV 开发包。
-find_dependency(OpenCV @OpenCV_VERSION@ EXACT COMPONENTS core imgproc imgcodecs video)
+find_dependency(OpenCV @OpenCV_VERSION@ EXACT COMPONENTS core imgproc imgcodecs video features2d calib3d)
 include("${CMAKE_CURRENT_LIST_DIR}/MifTargets.cmake")
 # OpenCV 的头文件路径来自使用者环境，不能写死为 SDK 构建机器上的路径。
 set_property(TARGET mif::core APPEND PROPERTY INTERFACE_INCLUDE_DIRECTORIES "${OpenCV_INCLUDE_DIRS}")

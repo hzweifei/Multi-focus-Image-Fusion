@@ -9,6 +9,9 @@
 
 // 核心算法回归测试入口；CTest 通过用例名分别运行，失败原因可独立定位。
 void testFocusMeasure();
+void testRegistrationHomography();
+void testRegistrationEcc();
+void testRegistrationFailure();
 namespace {
 const std::vector<mif::FusionMethod> methods{mif::FusionMethod::GuidedFilter, mif::FusionMethod::LaplacianPyramid};
 
@@ -99,18 +102,68 @@ void weights() {
     }
 }
 
-// 回调返回 false 时抛出 Cancelled；正常执行时进度单调前进并最终到达 100。
+// 通过公开接口验证两种方法的阶段回调：各处理阶段可取消，异常保持类型和消息，
+// 完整执行时阶段名称正确、进度单调前进并最终到达 100。
 void cancellation() {
     const auto images = focusStack(texture());
-    int last = -1;
-    bool stopped = false;
-    try { mif::fuse(images, {}, [&](int percent, const std::string&) { return percent < 50; }); }
-    catch (const mif::Cancelled&) { stopped = true; }
-    require(stopped, "Cancellation was ignored");
-    mif::fuse(images, {}, [&](int percent, const std::string&) {
-        require(percent >= last && percent <= 100, "Progress is not monotonic"); last = percent; return true;
-    });
-    require(last == 100, "Missing completion progress");
+    // 自定义异常可区分“原样传播”与被包装成通用 runtime_error 的情况。
+    struct CallbackFailure : std::runtime_error {
+        using std::runtime_error::runtime_error;
+    };
+    for (const auto method : methods) {
+        mif::FusionOptions options;
+        options.method = method;
+        const std::string blending_stage = method == mif::FusionMethod::GuidedFilter ? "blend" : "pyramid";
+        const std::vector<std::string> cancellable_stages{"focus", "weights", blending_stage, "finish"};
+        for (const auto& target_stage : cancellable_stages) {
+            int last = -1;
+            std::string last_stage;
+            bool stopped = false;
+            try {
+                mif::fuse(images, options, [&](int percent, const std::string& stage) {
+                    require(percent >= 0 && percent >= last && percent <= 100, "Progress decreased before cancellation");
+                    last = percent;
+                    last_stage = stage;
+                    return stage != target_stage;
+                });
+            } catch (const mif::Cancelled&) {
+                stopped = true;
+            }
+            require(stopped && last_stage == target_stage,
+                    "Cancellation was ignored or requested stage was missing: " + target_stage);
+
+            // 分别从公共阶段和方法内部抛出，确保拆分后的分派层没有吞掉或改写异常。
+            bool propagated = false;
+            try {
+                mif::fuse(images, options, [&](int, const std::string& stage) {
+                    if (stage == target_stage) throw CallbackFailure("Progress callback sentinel");
+                    return true;
+                });
+            } catch (const CallbackFailure& error) {
+                propagated = std::string(error.what()) == "Progress callback sentinel";
+            }
+            require(propagated, "Callback exception was changed or stage was missing: " + target_stage);
+        }
+
+        // 完整执行检查方法自己的融合阶段，能发现错误分派到另一种方法的回归。
+        int last = -1;
+        std::vector<std::string> observed_stages;
+        mif::fuse(images, options, [&](int percent, const std::string& stage) {
+            require(percent >= 0 && percent >= last && percent <= 100, "Progress is not monotonic");
+            last = percent;
+            if (observed_stages.empty() || observed_stages.back() != stage)
+                observed_stages.push_back(stage);
+            return true;
+        });
+        require(last == 100 && !observed_stages.empty() && observed_stages.back() == "done",
+                "Missing completion progress or done stage");
+        for (const auto& stage : cancellable_stages)
+            require(std::find(observed_stages.begin(), observed_stages.end(), stage) != observed_stages.end(),
+                    "Missing processing stage: " + stage);
+        const std::string other_stage = method == mif::FusionMethod::GuidedFilter ? "pyramid" : "blend";
+        require(std::find(observed_stages.begin(), observed_stages.end(), other_stage) == observed_stages.end(),
+                "Fusion ran the wrong method's processing stage");
+    }
 }
 
 // 用已知变换合成第二张图，检查配准矩阵方向、位移量和共同有效区域裁剪。
@@ -151,7 +204,9 @@ int main(int argc, char** argv) {
     const std::map<std::string, std::function<void()>> tests{
         {"focus", testFocusMeasure}, {"quality", quality}, {"identity", identity},
         {"validation", validation}, {"weights", weights}, {"cancellation", cancellation},
-        {"alignment", alignment}, {"large_stack", largeStack}};
+        {"alignment", alignment}, {"registration_homography", testRegistrationHomography},
+        {"registration_ecc", testRegistrationEcc}, {"registration_failure", testRegistrationFailure},
+        {"large_stack", largeStack}};
     try {
         if (argc != 2 || tests.count(argv[1]) == 0) throw std::runtime_error("Specify a test case");
         tests.at(argv[1])(); std::cout << "PASS " << argv[1] << '\n'; return 0;

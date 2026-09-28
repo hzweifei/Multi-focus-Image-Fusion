@@ -77,18 +77,26 @@ void MainWindow::createSidebar() {
     edits->addWidget(remove_); edits->addWidget(clear_);
     side->addLayout(edits);
 
-    // 左侧第二组：顺序对应 FusionMethod、FocusMeasure、Alignment 的枚举值。
+    // 左侧第二组：每个条目保存对应的核心枚举值，显示顺序可以独立调整。
     parameters_ = new QGroupBox(QStringLiteral("02  /  融合设置"));
     auto* form = new QFormLayout(parameters_);
     form->setVerticalSpacing(12);
     method_ = new QComboBox;
-    method_->addItem(QStringLiteral("引导滤波"));
-    method_->addItem(QStringLiteral("拉普拉斯金字塔"));
+    method_->addItem(QStringLiteral("引导滤波"), static_cast<int>(FusionMethod::GuidedFilter));
+    method_->addItem(QStringLiteral("拉普拉斯金字塔"), static_cast<int>(FusionMethod::LaplacianPyramid));
     focus_ = new QComboBox;
-    focus_->addItems({QStringLiteral("改进拉普拉斯"), QStringLiteral("Tenengrad 梯度")});
+    focus_->addItem(QStringLiteral("改进拉普拉斯"), static_cast<int>(FocusMeasure::ModifiedLaplacian));
+    focus_->addItem(QStringLiteral("Tenengrad 梯度"), static_cast<int>(FocusMeasure::Tenengrad));
     alignment_ = new QComboBox;
-    alignment_->addItems({QStringLiteral("关闭（图片已对齐）"), QStringLiteral("ECC 平移"), QStringLiteral("ECC 仿射")});
-    alignment_->setToolTip(QStringLiteral("以第一张为参考；配准后裁剪共有区域。适用于小幅位移或倍率变化。"));
+    alignment_->setObjectName("alignmentMode");
+    alignment_->addItem(QStringLiteral("关闭（图片已对齐）"), static_cast<int>(Alignment::None));
+    alignment_->addItem(QStringLiteral("ECC 平移"), static_cast<int>(Alignment::Translation));
+    alignment_->addItem(QStringLiteral("ECC 仿射"), static_cast<int>(Alignment::Affine));
+    alignment_->addItem(QStringLiteral("SIFT 特征点单应性"), static_cast<int>(Alignment::FeatureHomography));
+    alignment_->addItem(QStringLiteral("ECC 单应性"), static_cast<int>(Alignment::EccHomography));
+    alignment_->setToolTip(QStringLiteral("以第一张为参考，配准后裁剪共有区域。\n"
+        "ECC 平移/仿射适合小幅位移或倍率变化；单应性可处理平面透视变化。\n"
+        "SIFT 需要足够可匹配的纹理；ECC 单应性适合初始偏差较小的图像。"));
     window_ = new QSpinBox; window_->setRange(1, 99); window_->setSingleStep(2); window_->setValue(9);
     window_->setToolTip(QStringLiteral("清晰度统计窗口，必须为奇数。增大可抑制噪声，但可能损失细小结构。"));
     radius_ = new QSpinBox; radius_->setRange(1, 64); radius_->setValue(3);
@@ -240,7 +248,7 @@ void MainWindow::updateControls() {
     remove_->setEnabled(!busy && !files_->selectedItems().isEmpty());
     clear_->setEnabled(!busy && files_->count() > 0);
     parameters_->setEnabled(!busy);
-    levels_->setEnabled(method_->currentIndex() == 1);
+    levels_->setEnabled(method_->currentData().toInt() == static_cast<int>(FusionMethod::LaplacianPyramid));
     run_->setEnabled(busy || files_->count() >= 2);
     run_->setText(busy ? QStringLiteral("取消处理") : QStringLiteral("开始融合"));
     save_->setEnabled(!busy && !result_.empty());
@@ -259,9 +267,10 @@ void MainWindow::startFusion() {
     }
     // 将控件值复制为本次任务的参数快照，后台线程不会读取界面控件。
     FusionOptions options;
-    options.method = static_cast<FusionMethod>(method_->currentIndex());
-    options.focus_measure = static_cast<FocusMeasure>(focus_->currentIndex());
-    options.alignment = static_cast<Alignment>(alignment_->currentIndex());
+    // 从条目数据读取枚举，不将下拉框位置当作模式值；新增或重排选项不会改变含义。
+    options.method = static_cast<FusionMethod>(method_->currentData().toInt());
+    options.focus_measure = static_cast<FocusMeasure>(focus_->currentData().toInt());
+    options.alignment = static_cast<Alignment>(alignment_->currentData().toInt());
     options.focus_window = window_->value(); options.detail_radius = radius_->value();
     options.pyramid_levels = levels_->value();
     QStringList paths;

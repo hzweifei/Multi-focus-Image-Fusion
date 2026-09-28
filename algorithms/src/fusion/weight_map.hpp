@@ -3,7 +3,7 @@
 #include <opencv2/core.hpp>
 #include <vector>
 
-namespace mif::detail {
+namespace mif::detail::fusion {
 
 /// 灰度引导滤波：用 guide 的边缘约束 input 权重的平滑，返回裁剪到 [0, 1] 的权重。
 /// 两个输入应为同尺寸 CV_32FC1，guide 和 input 均位于 [0, 1]；半径和正则项已校验。
@@ -27,5 +27,5 @@ cv::Mat dominantIndices(const std::vector<cv::Mat>& weights);
 /// 内部调用仅使用 1 或 3 通道；channels 为 1 时返回共享数据的只读浅拷贝。
 cv::Mat expandWeight(const cv::Mat& weight, int channels);
 
-} // 命名空间 mif::detail
+} // 命名空间 mif::detail::fusion
 

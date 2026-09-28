@@ -5,12 +5,31 @@ else()
     set(_mif_library_type STATIC)
 endif()
 add_library(mif_core ${_mif_library_type}
-    src/fusion.cpp
-    src/focus_measure.cpp
-    src/weight_map.cpp
-    src/blending.cpp
-    src/registration.cpp
+    # 公开接口和完整处理流程。
+    include/mif/fusion.hpp
+    include/mif/options.hpp
+    src/pipeline.cpp
+    # 仅存放被多个模块使用的基础工具。
+    src/common/grayscale.hpp
+    src/common/progress.hpp
+    # 融合入口、融合专用工具及具体方法。
+    src/fusion/fusion.hpp
+    src/fusion/fusion.cpp
+    src/fusion/focus_measure.hpp
+    src/fusion/focus_measure.cpp
+    src/fusion/weight_map.hpp
+    src/fusion/weight_map.cpp
+    src/fusion/guided_filter.cpp
+    src/fusion/laplacian_pyramid.cpp
+    # 配准入口及具体变换估计方法。
+    src/registration/registration.hpp
+    src/registration/registration.cpp
+    src/registration/ecc.cpp
+    src/registration/sift_homography.cpp
 )
+# Visual Studio 等 IDE 按磁盘目录展示源码和头文件，便于按模块浏览。
+get_target_property(_mif_sources mif_core SOURCES)
+source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${_mif_sources})
 add_library(mif::core ALIAS mif_core)
 # 构建树和安装后的 SDK 使用同一名称 mif::core；Debug 库名加 d 防止误用。
 set_target_properties(mif_core PROPERTIES EXPORT_NAME core DEBUG_POSTFIX d)
@@ -23,7 +42,10 @@ generate_export_header(mif_core
 if(NOT MIF_BUILD_SHARED)
     target_compile_definitions(mif_core PUBLIC MIF_STATIC_DEFINE)
 endif()
-target_include_directories(mif_core PUBLIC
+target_include_directories(mif_core
+    # 内部引用统一写成 common/...、fusion/...、registration/...，不向 SDK 使用者暴露。
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
     $<INSTALL_INTERFACE:include>
@@ -34,6 +56,9 @@ foreach(directory IN LISTS OpenCV_INCLUDE_DIRS)
 endforeach()
 target_link_libraries(mif_core PUBLIC ${OpenCV_LIBS})
 target_compile_features(mif_core PUBLIC cxx_std_17)
+# 公开头文件包含 UTF-8 中文注释，MSVC 消费方也需要相同编码设置。
+# 使用接口属性让 find_package(Mif) 导出的目标自动传递，避免系统代码页误读头文件。
+target_compile_options(mif_core INTERFACE $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/utf-8>)
 
 # SDK 中 DLL 放 bin，导入库/静态库放 lib；内部 src 头文件不对外安装。
 install(TARGETS mif_core EXPORT MifTargets

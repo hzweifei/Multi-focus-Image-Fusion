@@ -1,7 +1,7 @@
-#include "weight_map.hpp"
+#include "fusion/weight_map.hpp"
 #include <opencv2/imgproc.hpp>
 
-namespace mif::detail {
+namespace mif::detail::fusion {
 
 cv::Mat guidedFilter(const cv::Mat& guide, const cv::Mat& input, int radius, double epsilon) {
     const cv::Size size(2 * radius + 1, 2 * radius + 1);
@@ -77,5 +77,5 @@ cv::Mat expandWeight(const cv::Mat& weight, int channels) {
     return expanded;
 }
 
-} // 命名空间 mif::detail
+} // 命名空间 mif::detail::fusion
 
