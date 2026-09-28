@@ -1,0 +1,23 @@
+[build-system]
+requires = ["scikit-build-core>=0.10,<1"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "mif-focus-fusion"
+version = "0.1.0"
+description = "Traditional multi-focus image fusion with C++ and OpenCV"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.23"]
+
+[tool.scikit-build]
+wheel.packages = ["bindings/python/python/mif"]
+wheel.license-files = ["THIRD_PARTY_NOTICES.md", "ext/nanobind/LICENSE", "ext/nanobind/ext/robin_map/LICENSE"]
+cmake.build-type = "Release"
+
+[tool.scikit-build.cmake.define]
+MIF_BUILD_GUI = "OFF"
+MIF_BUILD_PYTHON = "ON"
+MIF_BUILD_TESTS = "OFF"
+MIF_BUILD_EXAMPLES = "OFF"
+

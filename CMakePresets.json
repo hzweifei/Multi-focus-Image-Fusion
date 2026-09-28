@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {"major": 3, "minor": 21, "patch": 0},
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "Desktop / Release",
+      "binaryDir": "${sourceDir}/build/default",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Release", "MIF_BUILD_GUI": "ON"}
+    },
+    {
+      "name": "core",
+      "inherits": "default",
+      "displayName": "Core and tests",
+      "binaryDir": "${sourceDir}/build/core",
+      "cacheVariables": {"MIF_BUILD_GUI": "OFF", "MIF_BUILD_TESTS": "ON"}
+    }
+  ],
+  "buildPresets": [
+    {"name": "default", "configurePreset": "default", "configuration": "Release"},
+    {"name": "core", "configurePreset": "core", "configuration": "Release"}
+  ],
+  "testPresets": [
+    {"name": "core", "configurePreset": "core", "configuration": "Release", "output": {"outputOnFailure": true}}
+  ]
+}
+

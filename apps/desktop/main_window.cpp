@@ -1,0 +1,296 @@
+#include "main_window.hpp"
+#include "ui_main_window.h"
+#include "image_io.hpp"
+#include "widgets/image_view.hpp"
+#include "workers/fusion_worker.hpp"
+#include <QCloseEvent>
+#include <QCollator>
+#include <QComboBox>
+#include <QDir>
+#include <QDragEnterEvent>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QFormLayout>
+#include <QGroupBox>
+#include <QLabel>
+#include <QListWidget>
+#include <QMessageBox>
+#include <QMimeData>
+#include <QProgressBar>
+#include <QPushButton>
+#include <QSettings>
+#include <QSpinBox>
+#include <QSplitter>
+#include <QVBoxLayout>
+#include <algorithm>
+
+namespace mif::desktop {
+namespace {
+const QString imageFilter = QStringLiteral("图像 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)");
+bool supported(const QString& path) {
+    static const QStringList extensions{"png", "jpg", "jpeg", "bmp", "tif", "tiff"};
+    return extensions.contains(QFileInfo(path).suffix().toLower());
+}
+QString lastFolder() { return QSettings().value("lastFolder", QDir::homePath()).toString(); }
+}
+
+MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui_(std::make_unique<Ui::MainWindow>()) {
+    ui_->setupUi(this);
+    setAcceptDrops(true);
+    setMinimumSize(940, 670);
+    auto* sidebar = new QWidget(this);
+    sidebar->setMinimumWidth(270);
+    sidebar->setMaximumWidth(330);
+    auto* side = new QVBoxLayout(sidebar);
+    side->setContentsMargins(0, 0, 0, 0);
+    count_ = new QLabel(QStringLiteral("01  /  图像栈"));
+    count_->setObjectName("sectionTitle");
+    side->addWidget(count_);
+    auto* imports = new QHBoxLayout;
+    add_ = new QPushButton(QStringLiteral("添加图片"));
+    folder_ = new QPushButton(QStringLiteral("导入文件夹"));
+    imports->addWidget(add_); imports->addWidget(folder_);
+    side->addLayout(imports);
+    files_ = new QListWidget;
+    files_->setObjectName("imageList");
+    files_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    files_->setMinimumHeight(150);
+    side->addWidget(files_, 1);
+    auto* edits = new QHBoxLayout;
+    remove_ = new QPushButton(QStringLiteral("移除选中"));
+    clear_ = new QPushButton(QStringLiteral("清空"));
+    edits->addWidget(remove_); edits->addWidget(clear_);
+    side->addLayout(edits);
+
+    parameters_ = new QGroupBox(QStringLiteral("02  /  融合设置"));
+    auto* form = new QFormLayout(parameters_);
+    form->setVerticalSpacing(12);
+    method_ = new QComboBox;
+    method_->addItem(QStringLiteral("引导滤波"));
+    method_->addItem(QStringLiteral("拉普拉斯金字塔"));
+    focus_ = new QComboBox;
+    focus_->addItems({QStringLiteral("改进拉普拉斯"), QStringLiteral("Tenengrad 梯度")});
+    alignment_ = new QComboBox;
+    alignment_->addItems({QStringLiteral("关闭（图片已对齐）"), QStringLiteral("ECC 平移"), QStringLiteral("ECC 仿射")});
+    alignment_->setToolTip(QStringLiteral("以第一张为参考；配准后裁剪共有区域。适用于小幅位移或倍率变化。"));
+    window_ = new QSpinBox; window_->setRange(1, 99); window_->setSingleStep(2); window_->setValue(9);
+    window_->setToolTip(QStringLiteral("清晰度统计窗口，必须为奇数。增大可抑制噪声，但可能损失细小结构。"));
+    radius_ = new QSpinBox; radius_->setRange(1, 64); radius_->setValue(3);
+    levels_ = new QSpinBox; levels_->setRange(1, 10); levels_->setValue(5);
+    form->addRow(QStringLiteral("融合方法"), method_);
+    form->addRow(QStringLiteral("清晰度"), focus_);
+    form->addRow(QStringLiteral("自动配准"), alignment_);
+    form->addRow(QStringLiteral("统计窗口"), window_);
+    form->addRow(QStringLiteral("细节半径"), radius_);
+    form->addRow(QStringLiteral("金字塔层数"), levels_);
+    side->addWidget(parameters_);
+    auto* note = new QLabel(QStringLiteral("支持灰度 / 彩色 · 保留 8 / 16 位精度\n请使用同尺寸、同位深、同通道的图片。"));
+    note->setObjectName("muted"); note->setWordWrap(true);
+    side->addWidget(note);
+    run_ = new QPushButton(QStringLiteral("开始融合"));
+    run_->setObjectName("primaryButton"); run_->setMinimumHeight(44);
+    side->addWidget(run_);
+    ui_->workspaceLayout->addWidget(sidebar);
+
+    auto* workspace = new QVBoxLayout;
+    auto* toolbar = new QHBoxLayout;
+    auto* heading = new QLabel(QStringLiteral("03  /  预览与结果"));
+    heading->setObjectName("sectionTitle");
+    toolbar->addWidget(heading); toolbar->addStretch();
+    auto* fit = new QPushButton(QStringLiteral("适应窗口"));
+    save_ = new QPushButton(QStringLiteral("导出结果"));
+    save_->setObjectName("saveButton");
+    toolbar->addWidget(fit); toolbar->addWidget(save_);
+    workspace->addLayout(toolbar);
+    auto* previews = new QSplitter(Qt::Horizontal);
+    auto addPreview = [previews](const QString& title, ImageView*& view, QLabel*& info) {
+        auto* panel = new QWidget;
+        auto* layout = new QVBoxLayout(panel);
+        layout->setContentsMargins(0, 0, 0, 0);
+        auto* label = new QLabel(title); label->setObjectName("previewTitle");
+        layout->addWidget(label);
+        view = new ImageView; layout->addWidget(view, 1);
+        info = new QLabel(QStringLiteral("等待图片")); info->setObjectName("muted"); info->setWordWrap(true);
+        layout->addWidget(info);
+        previews->addWidget(panel);
+    };
+    addPreview(QStringLiteral("输入图像"), source_view_, source_info_);
+    addPreview(QStringLiteral("全聚焦结果"), result_view_, result_info_);
+    previews->setChildrenCollapsible(false);
+    workspace->addWidget(previews, 1);
+    auto* tip = new QLabel(QStringLiteral("滚轮缩放 · 拖动平移 · 双击适应窗口 · 可拖入图片或文件夹"));
+    tip->setObjectName("muted"); workspace->addWidget(tip);
+    status_ = new QLabel(QStringLiteral("添加至少两张不同焦点的图片，即可开始。"));
+    status_->setWordWrap(true); workspace->addWidget(status_);
+    progress_ = new QProgressBar; progress_->setRange(0, 100); progress_->setValue(0);
+    progress_->setFixedHeight(16); workspace->addWidget(progress_);
+    ui_->workspaceLayout->addLayout(workspace, 1);
+
+    connect(add_, &QPushButton::clicked, this, [this] {
+        addPaths(QFileDialog::getOpenFileNames(this, QStringLiteral("选择不同焦点的图片"), lastFolder(), imageFilter));
+    });
+    connect(folder_, &QPushButton::clicked, this, [this] {
+        const auto path = QFileDialog::getExistingDirectory(this, QStringLiteral("导入图像文件夹"), lastFolder());
+        if (!path.isEmpty()) addPaths({path});
+    });
+    connect(remove_, &QPushButton::clicked, this, [this] {
+        qDeleteAll(files_->selectedItems()); clearResult(); updateControls();
+    });
+    connect(clear_, &QPushButton::clicked, this, [this] {
+        files_->clear(); source_view_->setImage({}); source_info_->setText(QStringLiteral("等待图片"));
+        clearResult(); updateControls();
+    });
+    connect(files_, &QListWidget::currentRowChanged, this, [this] { previewSelected(); });
+    connect(files_, &QListWidget::itemSelectionChanged, this, &MainWindow::updateControls);
+    connect(method_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::updateControls);
+    connect(run_, &QPushButton::clicked, this, &MainWindow::startFusion);
+    connect(save_, &QPushButton::clicked, this, &MainWindow::exportResult);
+    connect(fit, &QPushButton::clicked, this, [this] { source_view_->fitImage(); result_view_->fitImage(); });
+    const auto geometry = QSettings().value("windowGeometry").toByteArray();
+    if (!geometry.isEmpty()) restoreGeometry(geometry);
+    updateControls();
+}
+
+MainWindow::~MainWindow() {
+    if (worker_) { worker_->requestInterruption(); worker_->wait(); }
+}
+
+void MainWindow::addPaths(const QStringList& paths) {
+    if (worker_) return;
+    QStringList expanded;
+    for (const auto& path : paths) {
+        const QFileInfo info(path);
+        if (info.isDir()) {
+            for (const auto& file : QDir(path).entryInfoList(QDir::Files | QDir::Readable))
+                if (supported(file.filePath())) expanded.push_back(file.absoluteFilePath());
+        } else if (info.isFile() && supported(path)) expanded.push_back(info.absoluteFilePath());
+    }
+    QCollator collator(QLocale::English); collator.setNumericMode(true);
+    std::sort(expanded.begin(), expanded.end(), [&collator](const QString& a, const QString& b) {
+        return collator.compare(a, b) < 0;
+    });
+    int added = 0;
+    for (const auto& path : expanded) {
+        bool exists = false;
+        for (int i = 0; i < files_->count(); ++i)
+            if (files_->item(i)->data(Qt::UserRole).toString() == path) { exists = true; break; }
+        if (exists) continue;
+        auto* item = new QListWidgetItem(QFileInfo(path).fileName(), files_);
+        item->setData(Qt::UserRole, path); item->setToolTip(path); ++added;
+    }
+    if (added) {
+        clearResult();
+        QSettings().setValue("lastFolder", QFileInfo(expanded.front()).absolutePath());
+        status_->setText(QStringLiteral("已添加 %1 张图片。第一张将作为配准参考。未读取的文件将在融合时检查。").arg(added));
+        if (!files_->currentItem()) files_->setCurrentRow(0);
+    } else if (!paths.isEmpty()) status_->setText(QStringLiteral("没有新的受支持图片可导入。"));
+    updateControls();
+}
+
+void MainWindow::previewSelected() {
+    const auto* item = files_->currentItem();
+    if (!item) { source_view_->setImage({}); source_info_->setText(QStringLiteral("等待图片")); return; }
+    try {
+        const auto image = readImage(item->data(Qt::UserRole).toString());
+        source_view_->setImage(previewImage(image));
+        source_info_->setText(QStringLiteral("%1\n%2 × %3 · %4 位 · %5 通道")
+            .arg(item->text()).arg(image.cols).arg(image.rows).arg(image.elemSize1() * 8).arg(image.channels()));
+    } catch (const std::exception& error) {
+        source_view_->setImage({}); source_info_->setText(QString::fromUtf8(error.what()));
+    }
+}
+
+void MainWindow::clearResult() {
+    result_.release(); result_view_->setImage({});
+    result_info_->setText(QStringLiteral("完成融合后在此显示")); progress_->setValue(0);
+}
+
+void MainWindow::updateControls() {
+    const bool busy = worker_ != nullptr;
+    add_->setEnabled(!busy); folder_->setEnabled(!busy);
+    remove_->setEnabled(!busy && !files_->selectedItems().isEmpty());
+    clear_->setEnabled(!busy && files_->count() > 0);
+    parameters_->setEnabled(!busy);
+    levels_->setEnabled(method_->currentIndex() == 1);
+    run_->setEnabled(busy || files_->count() >= 2);
+    run_->setText(busy ? QStringLiteral("取消处理") : QStringLiteral("开始融合"));
+    save_->setEnabled(!busy && !result_.empty());
+    count_->setText(QStringLiteral("01  /  图像栈 · %1 张").arg(files_->count()));
+}
+
+void MainWindow::startFusion() {
+    if (worker_) {
+        worker_->requestInterruption(); run_->setEnabled(false);
+        status_->setText(QStringLiteral("正在取消，将在当前处理步骤结束后停止…")); return;
+    }
+    if (files_->count() < 2) return;
+    if (window_->value() % 2 == 0) {
+        status_->setText(QStringLiteral("统计窗口必须为奇数，例如 7、9 或 11。")); return;
+    }
+    FusionOptions options;
+    options.method = static_cast<FusionMethod>(method_->currentIndex());
+    options.focus_measure = static_cast<FocusMeasure>(focus_->currentIndex());
+    options.alignment = static_cast<Alignment>(alignment_->currentIndex());
+    options.focus_window = window_->value(); options.detail_radius = radius_->value();
+    options.pyramid_levels = levels_->value();
+    QStringList paths;
+    for (int i = 0; i < files_->count(); ++i) paths.push_back(files_->item(i)->data(Qt::UserRole).toString());
+    clearResult();
+    worker_ = new FusionWorker(paths, options, this);
+    connect(worker_, &FusionWorker::progress, this, [this](int value, const QString& stage) {
+        progress_->setValue(value);
+        if (!worker_->isInterruptionRequested()) status_->setText(stage);
+    });
+    connect(worker_, &FusionWorker::completed, this, [this](const cv::Mat& image, const QString& summary) {
+        result_ = image; result_view_->setImage(previewImage(result_)); result_info_->setText(summary);
+        status_->setText(QStringLiteral("融合完成，可导出结果。自动配准开启时，结果已裁剪为共有区域。"));
+        emit fusionCompleted();
+    });
+    connect(worker_, &FusionWorker::failed, this, [this](const QString& message) {
+        status_->setText(QStringLiteral("处理失败：") + message); emit fusionFailed(message);
+    });
+    connect(worker_, &FusionWorker::cancelled, this, [this] { status_->setText(QStringLiteral("已取消处理。")); progress_->setValue(0); });
+    connect(worker_, &QThread::finished, this, [this] {
+        worker_->deleteLater(); worker_ = nullptr; updateControls();
+        if (closing_) close();
+    });
+    updateControls(); worker_->start();
+}
+
+void MainWindow::exportResult() {
+    if (result_.empty()) return;
+    const bool floating = result_.depth() == CV_32F;
+    const auto filter = floating ? QStringLiteral("TIFF (*.tif *.tiff)") :
+        result_.depth() == CV_16U ? QStringLiteral("PNG (*.png);;TIFF (*.tif *.tiff)") :
+        QStringLiteral("PNG (*.png);;TIFF (*.tif *.tiff);;JPEG (*.jpg *.jpeg)");
+    QString selected;
+    auto path = QFileDialog::getSaveFileName(this, QStringLiteral("导出融合结果"),
+        QDir(lastFolder()).filePath(floating ? "fused.tif" : "fused.png"), filter, &selected);
+    if (path.isEmpty()) return;
+    if (QFileInfo(path).suffix().isEmpty())
+        path += selected.startsWith("TIFF") ? ".tif" : selected.startsWith("JPEG") ? ".jpg" : ".png";
+    try {
+        writeImage(path, result_); status_->setText(QStringLiteral("已保存：") + path);
+        QSettings().setValue("lastFolder", QFileInfo(path).absolutePath());
+    } catch (const std::exception& error) {
+        QMessageBox::warning(this, QStringLiteral("保存失败"), QString::fromUtf8(error.what()));
+    }
+}
+
+void MainWindow::closeEvent(QCloseEvent* event) {
+    if (worker_) {
+        closing_ = true; worker_->requestInterruption(); event->ignore();
+        status_->setText(QStringLiteral("正在停止处理，完成后关闭窗口…")); return;
+    }
+    QSettings().setValue("windowGeometry", saveGeometry()); event->accept();
+}
+void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
+    if (!worker_ && event->mimeData()->hasUrls()) event->acceptProposedAction();
+}
+void MainWindow::dropEvent(QDropEvent* event) {
+    QStringList paths;
+    for (const auto& url : event->mimeData()->urls()) if (url.isLocalFile()) paths.push_back(url.toLocalFile());
+    addPaths(paths); event->acceptProposedAction();
+}
+}
+

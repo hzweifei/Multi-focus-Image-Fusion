@@ -1,0 +1,14 @@
+/build/
+/outputs/
+/CMakeUserPresets.json
+/.vs/
+/.idea/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+/dist/
+/bindings/python/dist/
+/bindings/python/build/
+*.user
+
