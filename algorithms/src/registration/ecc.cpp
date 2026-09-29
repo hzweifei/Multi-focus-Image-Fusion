@@ -1,5 +1,5 @@
 #include "registration/registration.hpp"
-#include <mif/options.hpp>
+#include <mif/registration_options.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/video/tracking.hpp>
 #include <cmath>
@@ -38,11 +38,11 @@ int motionType(Alignment alignment) {
 /// 返回矩阵采用参考坐标到源图坐标的方向，供公共管线反向采样。
 class EccEstimator final : public Estimator {
 public:
-    EccEstimator(const cv::Mat& reference_gray, const FusionOptions& options)
-        : motion_(motionType(options.alignment)),
+    EccEstimator(const cv::Mat& reference_gray, const RegistrationOptions& options)
+        : motion_(motionType(options.method)),
           reference_(prepare(reference_gray, "reference")),
           criteria_(cv::TermCriteria::COUNT | cv::TermCriteria::EPS,
-                    options.alignment_iterations, options.alignment_epsilon) {}
+                    options.iterations, options.epsilon) {}
 
     cv::Mat estimate(const cv::Mat& source_gray) override {
         // 参考图和源图均检查，避免让常量源图进入相关系数计算后出现无效数值。
@@ -83,7 +83,7 @@ private:
 
 /// 创建 ECC 估计器并立即检查参考图；参考图由平滑后的独立缓冲区持有。
 std::unique_ptr<Estimator> makeEccEstimator(const cv::Mat& reference_gray,
-                                             const FusionOptions& options) {
+                                             const RegistrationOptions& options) {
     return std::make_unique<EccEstimator>(reference_gray, options);
 }
 

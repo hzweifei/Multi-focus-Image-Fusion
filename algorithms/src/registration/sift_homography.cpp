@@ -60,15 +60,15 @@ void requireSpatialSpread(const std::vector<cv::Point2f>& points, const cv::Size
 }
 
 /// SIFT 特征配准估计器。参考图的特征仅提取一次，供同一焦点序列的所有源图复用。
-/// 每个融合任务独立创建实例；可变 SIFT 状态不会在并行任务之间共享。
+/// 每个配准任务独立创建实例；可变 SIFT 状态不会在并行任务之间共享。
 class HomographyEstimator final : public Estimator {
 public:
-    HomographyEstimator(const cv::Mat& reference_gray, const FusionOptions& options)
-        : sift_(cv::SIFT::create(options.alignment_max_features)),
+    HomographyEstimator(const cv::Mat& reference_gray, const RegistrationOptions& options)
+        : sift_(cv::SIFT::create(options.max_features)),
           reference_size_(reference_gray.size()),
-          match_ratio_(options.alignment_match_ratio),
-          ransac_threshold_(options.alignment_ransac_threshold),
-          minimum_inlier_ratio_(options.alignment_min_inlier_ratio) {
+          match_ratio_(options.match_ratio),
+          ransac_threshold_(options.ransac_threshold),
+          minimum_inlier_ratio_(options.min_inlier_ratio) {
         extractFeatures(reference_gray, reference_keypoints_, reference_descriptors_, "reference");
     }
 
@@ -153,7 +153,7 @@ public:
     }
 
 private:
-    /// SIFT 接受 8 位图像；这份转换仅用于特征提取，不替换参与最终融合的原图。
+    /// SIFT 接受 8 位图像；这份转换仅用于特征提取，不替换用于重采样的高位深图像。
     void extractFeatures(const cv::Mat& gray, std::vector<cv::KeyPoint>& keypoints,
                          cv::Mat& descriptors, const char* image_role) {
         cv::Mat feature_image;
@@ -176,7 +176,7 @@ private:
 } // 匿名命名空间
 
 std::unique_ptr<Estimator> makeHomographyEstimator(const cv::Mat& reference_gray,
-                                                  const FusionOptions& options) {
+                                                  const RegistrationOptions& options) {
     return std::make_unique<HomographyEstimator>(reference_gray, options);
 }
 

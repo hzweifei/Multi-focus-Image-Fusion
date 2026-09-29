@@ -18,6 +18,7 @@ namespace Ui { class MainWindow; }
 namespace mif::desktop {
 class ImageView;
 class FusionWorker;
+class RegistrationSettings;
 
 /// 桌面程序主窗口：管理输入、参数和预览，耗时的读取与融合交给后台线程。
 /// 所有控件和 result_ 只由界面线程访问，窗口拥有 Qt 子控件的生命周期。
@@ -46,6 +47,8 @@ signals:
     void fusionFailed(const QString& message);
 
 protected:
+    /// 参数页滚动时忽略输入控件的滚轮改值，避免浏览设置时误改算法参数。
+    bool eventFilter(QObject* watched, QEvent* event) override;
     /// 正在处理时暂缓关闭，等工作线程结束后再关闭并保存窗口布局。
     void closeEvent(QCloseEvent* event) override;
     /// 空闲时允许拖入包含文件路径的内容。
@@ -54,7 +57,7 @@ protected:
     void dropEvent(QDropEvent* event) override;
 
 private:
-    /// 创建左侧的图像列表、算法参数和运行按钮。
+    /// 创建左侧的图像列表、独立配准/融合设置和统一运行按钮。
     void createSidebar();
     /// 创建右侧的输入/结果预览、导出按钮和进度显示。
     void createPreviewArea();
@@ -76,11 +79,12 @@ private:
     QListWidget* files_;
     QComboBox* method_;
     QComboBox* focus_;
-    QComboBox* alignment_;
     QSpinBox* window_;
     QSpinBox* levels_;
     QSpinBox* radius_;
-    QGroupBox* parameters_;
+    // 两组参数独立组织，运行期间一起锁定，防止界面显示的配置与任务快照不一致。
+    RegistrationSettings* registration_parameters_;
+    QGroupBox* fusion_parameters_;
 
     // 输入管理及任务操作按钮，由 Qt 父子对象关系统一释放。
     QPushButton* add_;

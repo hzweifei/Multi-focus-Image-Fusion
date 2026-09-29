@@ -1,11 +1,19 @@
 #include "fusion_worker.hpp"
 #include "image_io.hpp"
+#include <mif/pipeline.hpp>
+#include <mif/progress.hpp>
 #include <QElapsedTimer>
+#include <exception>
 #include <map>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace mif::desktop {
-FusionWorker::FusionWorker(QStringList paths, FusionOptions options, QObject* parent)
-    : QThread(parent), paths_(std::move(paths)), options_(options) {
+FusionWorker::FusionWorker(QStringList paths, RegistrationOptions registration_options,
+                           FusionOptions fusion_options, QObject* parent)
+    : QThread(parent), paths_(std::move(paths)), registration_options_(registration_options),
+      fusion_options_(fusion_options) {
     // 排队信号复制的是 Mat 头和共享内存的引用计数，像素内存会保持到接收方释放。
     qRegisterMetaType<cv::Mat>("cv::Mat");
 }
@@ -23,7 +31,9 @@ void FusionWorker::run() {
             images.push_back(readImage(paths_[i]));
         }
         // 回调仍在工作线程执行，只发信号并返回是否继续，不操作 GUI 对象。
-        const auto result = fuse(images, options_, [this](int percent, const std::string& stage) {
+        // 管线先执行独立配准再执行纯融合，并提供已经统一到 [0, 100] 的单调进度。
+        const auto result = registerAndFuse(images, registration_options_, fusion_options_,
+                                           [this](int percent, const std::string& stage) {
             // 核心库用稳定的阶段标识，中文显示文案只放在界面层。
             static const std::map<std::string, QString> names{
                 {"prepare", QStringLiteral("准备图像")}, {"align", QStringLiteral("对齐图像")},
@@ -36,8 +46,9 @@ void FusionWorker::run() {
         });
         // 即使取消恰好发生在最后一个算法回调之后，也避免发布已取消的任务结果。
         if (isInterruptionRequested()) throw Cancelled();
-        emit completed(result.image, QStringLiteral("%1 × %2 · %3 位 · %4 张图片 · %5 秒")
-            .arg(result.image.cols).arg(result.image.rows).arg(result.image.elemSize1() * 8)
+        const auto& image = result.fusion.image;
+        emit completed(image, QStringLiteral("%1 × %2 · %3 位 · %4 张图片 · %5 秒")
+            .arg(image.cols).arg(image.rows).arg(image.elemSize1() * 8)
             .arg(paths_.size()).arg(timer.elapsed() / 1000.0, 0, 'f', 2));
     } catch (const Cancelled&) {
         // 分开处理取消与错误，保证用户取消时不会看到失败提示。

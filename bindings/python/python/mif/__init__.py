@@ -1,9 +1,12 @@
-"""传统多聚焦图像融合接口；彩色数组使用 OpenCV 的 BGR 通道顺序。
+"""独立图像配准与传统多聚焦融合；彩色数组使用 OpenCV 的 BGR 通道顺序。
 
-Alignment.NONE 跳过配准；TRANSLATION/AFFINE 使用 ECC 估计平移/仿射。
-FEATURE_HOMOGRAPHY 使用 SIFT 特征匹配与 RANSAC 估计单应性，适合有足够
-共同纹理的平面透视变化；ECC_HOMOGRAPHY 使用 ECC 求解单应性，适合初始
-偏差较小的图像。所有配准以第一张输入为参考，均不使用 AI 模型。
+fuse/fuse_detailed 只执行融合，register_images 只执行配准；需要连续处理时
+调用 register_and_fuse，或把 register_images 返回的 images 显式传给 fuse。
+两个阶段分别使用 RegistrationOptions 和 FusionOptions，均不使用 AI 模型。
+
+迁移：原 FusionOptions.alignment 改为 RegistrationOptions.method，原
+alignment_* 字段去掉此前缀后移到 RegistrationOptions。旧的配准加融合调用
+改用 register_and_fuse；fuse_detailed 不再返回 crop 和 transforms。
 """
 import os
 from pathlib import Path
@@ -13,9 +16,10 @@ _dll_directory = os.add_dll_directory(str(Path(__file__).resolve().parent)) if o
 
 import numpy as np
 from . import _mif
-from ._mif import Alignment, FocusMeasure, FusionMethod, FusionOptions
+from ._mif import Alignment, FocusMeasure, FusionMethod, FusionOptions, RegistrationOptions
 
-__all__ = ["Alignment", "FocusMeasure", "FusionMethod", "FusionOptions", "fuse", "fuse_detailed"]
+__all__ = ["Alignment", "FocusMeasure", "FusionMethod", "FusionOptions", "RegistrationOptions",
+           "fuse", "fuse_detailed", "register_images", "register_and_fuse"]
 __version__ = "0.1.0"
 
 
@@ -38,46 +42,83 @@ def _prepare(images):
 
 
 def fuse(images, options=None):
-    """融合至少两张尺寸和精度一致的图像，返回独立存储的 NumPy 数组。
+    """仅融合至少两张已对齐的图像，返回独立存储的 NumPy 数组。
 
     images: H×W 灰度或 H×W×3 BGR 数组序列，精度为 uint8、uint16 或
         float32；float32 必须全部为 [0, 1] 范围内的有限数值。
     options: FusionOptions 参数对象；传入 None 时为本次调用创建默认参数。
 
-    特征配准参数：alignment_max_features 为特征点上限，默认 4000，
-        范围 [64, 100000]；alignment_match_ratio 为最近邻与次近邻距离比
-        阈值，默认 0.75，范围 (0, 1)；alignment_ransac_threshold 为有限
-        正数，默认 3.0，单位是 alignment_max_size 限制后的工作分辨率像素；
-        alignment_min_inlier_ratio 为 RANSAC 最小内点比例，默认 0.25，
-        范围 (0, 1]。核心会校验全部参数，包括当前模式未使用的字段。
-
     接受非连续切片和只读数组。C++ 处理前复制输入并释放 GIL，处理结束后
-    恢复 GIL。输出保留输入精度，尤其保留 uint16 的 16 位信息；启用配准时
-    裁剪到所有图像的共同有效矩形区域。输入数组不会被修改。
+    恢复 GIL。输出保留输入尺寸、通道和精度，输入数组不会被修改。
+    本入口只校验融合参数，不执行配准或裁剪；需要配准时先调用 register_images。
 
-    输入类型错误抛出 TypeError，非法图像或参数抛出 ValueError；配准等
-    运行过程失败会抛出 RuntimeError。
+    输入类型错误抛出 TypeError，非法图像或参数抛出 ValueError，运行失败抛出
+    RuntimeError。配准参数不能传给本函数。
     """
     return _mif.fuse(_prepare(images), options if options is not None else FusionOptions())
 
 
 def fuse_detailed(images, options=None):
-    """使用与 fuse 相同的输入约定，返回包含图像及诊断信息的字典。
+    """使用与 fuse 相同的输入约定，仅返回融合结果与诊断信息。
 
     image: 融合图像，精度和通道数与输入一致。
     focus_indices: int32 数组，每个位置记录从 0 开始的源图像索引。
-    crop: 第一张输入图像坐标系中的 (x, y, width, height)。
-    transforms: 每张输入对应一个 float32 矩阵，将参考坐标映射到源图坐标。
-        NONE、TRANSLATION、AFFINE 返回 2×3；FEATURE_HOMOGRAPHY 和
-        ECC_HOMOGRAPHY 返回 3×3，包括第一张参考图对应的单位矩阵。
-        若从输出像素 (u, v) 定位源图像素，应先构造参考坐标列向量
-        p = [u + crop[0], v + crop[1], 1]。2×3 变换直接计算 q = M @ p；
-        3×3 变换计算 q = H @ p 后，源坐标为 (q[0] / q[2], q[1] / q[2])，
-        使用前应检查 q[2] 非零。矩阵不包含裁剪偏移，方向始终为参考图到源图。
     weights: 设置 options.keep_weight_maps = True 时返回归一化细节权重
         数组列表；默认返回空列表。
 
+    字典仅含 image、focus_indices、weights 三个键；本阶段没有配准元数据。
     所有返回数组在调用结束后仍持有有效存储，异常约定与 fuse 相同。
     """
     return _mif.fuse_detailed(_prepare(images), options if options is not None else FusionOptions())
+
+
+def register_images(images, options=None):
+    """独立配准图像，返回 images、crop、transforms 字典，不执行融合。
+
+    输入图像格式、精度、值域及只读切片约定与 fuse 相同；options 使用独立的
+    RegistrationOptions，None 表示创建默认配置，默认 method=Alignment.NONE。
+    NONE 仍返回独立图像副本，各输出互不共享可写存储，便于继续修改或重复融合。
+
+    method: TRANSLATION/AFFINE 使用 ECC 估计平移/仿射；FEATURE_HOMOGRAPHY
+        使用 SIFT 与 RANSAC；ECC_HOMOGRAPHY 适合初始偏差较小的透视变化。
+    iterations、epsilon: ECC 迭代上限和收敛阈值，默认 150 和 1e-5。
+    max_size: 估计变换的最长边上限，默认 1200；最终在原分辨率重采样。
+    max_features: SIFT 特征上限，[64, 100000]，默认 4000。
+    match_ratio: 最近邻/次近邻描述子距离比阈值，范围 (0, 1)，默认 0.75。
+    ransac_threshold: 工作分辨率像素中的正数重投影阈值，默认 3.0。
+    min_inlier_ratio: 最小内点比例，范围 (0, 1]，默认 0.25。
+    配准入口检查这些配准参数，不检查任何融合参数。
+
+    images: 与输入顺序一致的配准图像列表，保留原始精度和通道，裁剪为共同区域。
+    crop: 第一张原始输入坐标系中的 (x, y, width, height)。
+    transforms: 每张输入对应一个 float32 矩阵，方向为参考图坐标到该源图坐标。
+        NONE/TRANSLATION/AFFINE 为 2×3，单应性为 3×3。第一张对应单位变换。
+        输出像素 (u, v) 先构造 p=[u+crop[0], v+crop[1], 1]。2×3 直接计算
+        q=M@p；3×3 计算 q=H@p 后除以第三项，源坐标为 (q[0]/q[2], q[1]/q[2])。
+        矩阵不包含裁剪偏移，使用齐次除法前应检查 q[2] 非零。
+
+    输入和配置在释放 GIL 前复制。返回数组在字典或 C++ 结果销毁后仍持有存储。
+    非法图像或参数抛出 ValueError，类型不匹配抛出 TypeError；纹理不足、无法收敛
+    或变换退化等配准失败抛出 RuntimeError。
+    """
+    return _mif.register_images(_prepare(images), options if options is not None else RegistrationOptions())
+
+
+def register_and_fuse(images, registration_options=None, fusion_options=None):
+    """顺序执行独立配准与融合阶段，返回平坦的详细结果字典。
+
+    registration_options 使用 RegistrationOptions；fusion_options 使用
+    FusionOptions。各自为 None 时创建自己的默认配置，两个阶段分别校验参数。
+    图像和参数的格式、异常约定分别见 register_images 与 fuse。
+
+    等价于先调用 register_images，再对返回的 images 调用 fuse_detailed；
+    配准阶段保留原始 dtype，因此整数重采样与显式两步采用同样的舍入过程。
+    字典包含 image、focus_indices、weights，以及配准阶段的 crop、transforms。
+    所有返回数组独立于输入，耗时计算期间释放 GIL。
+    """
+    return _mif.register_and_fuse(
+        _prepare(images),
+        registration_options if registration_options is not None else RegistrationOptions(),
+        fusion_options if fusion_options is not None else FusionOptions(),
+    )
 

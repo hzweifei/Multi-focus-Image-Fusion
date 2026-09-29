@@ -7,11 +7,17 @@ endif()
 add_library(mif_core ${_mif_library_type}
     # 公开接口和完整处理流程。
     include/mif/fusion.hpp
-    include/mif/options.hpp
+    include/mif/fusion_options.hpp
+    include/mif/registration.hpp
+    include/mif/registration_options.hpp
+    include/mif/pipeline.hpp
+    include/mif/progress.hpp
     src/pipeline.cpp
     # 仅存放被多个模块使用的基础工具。
     src/common/grayscale.hpp
     src/common/progress.hpp
+    src/common/image_stack.hpp
+    src/common/image_stack.cpp
     # 融合入口、融合专用工具及具体方法。
     src/fusion/fusion.hpp
     src/fusion/fusion.cpp
@@ -66,6 +72,11 @@ install(TARGETS mif_core EXPORT MifTargets
     LIBRARY DESTINATION lib COMPONENT SDK
     ARCHIVE DESTINATION lib COMPONENT SDK
 )
+# 原地更新旧 SDK 时，移除已拆分的公开头，避免两份参数类型定义同时残留。
+# 只删除本项目明确废弃的文件，不清空使用者的整个 include 目录。
+install(CODE [[
+    file(REMOVE "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/include/mif/options.hpp")
+]] COMPONENT SDK)
 install(DIRECTORY include/mif DESTINATION include COMPONENT SDK)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/include/mif/export.hpp" DESTINATION include/mif COMPONENT SDK)
 include(CMakePackageConfigHelpers)

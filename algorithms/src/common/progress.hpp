@@ -1,6 +1,6 @@
 #pragma once
 
-#include <mif/fusion.hpp>
+#include <mif/progress.hpp>
 
 namespace mif::detail {
 

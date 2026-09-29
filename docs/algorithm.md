@@ -8,18 +8,24 @@
 ## 1. 输入归一化
 
 8 位、16 位无符号整数分别除以 255、65535，在 float32 中处理。
-float32 输入已经处于 `[0, 1]`。输出裁剪到 `[0, 1]` 后恢复原始类型。
+float32 输入已经处于 `[0, 1]`。融合输出裁剪到 `[0, 1]` 后恢复原始类型。
+`registerImages()` 与 `fuse()` 各自处理输入并恢复输出位深；`fuse()` 要求输入已经对齐。
+`registerAndFuse()` 将配准返回的图像交给融合，与显式两步调用一致。整数配准图像
+在阶段之间恢复原位深，经过一次舍入；与旧版内部始终传递浮点工作图的流程相比，
+融合结果可能有少量像素差异。
+
 灰度图直接计算清晰度，彩色图用 OpenCV BGR 到灰度转换；同一套权重作用于
 全部颜色通道，避免每个通道独立选图带来的颜色不一致。
 
 ## 2. 可选配准
 
 两种方法分别位于 `algorithms/src/registration/ecc.cpp` 和 `sift_homography.cpp`。
-第一张图片为参考，其余图片直接向它配准；估计图像最长边不超过 `alignment_max_size`。
+第一张图片为参考，其余图片直接向它配准；估计图像最长边不超过 `RegistrationOptions.max_size`。
+配准由 `registerImages()` 独立执行，返回图像列表、共同裁剪区域和变换矩阵。
 
 | 选项 | 方法与模型 | 返回矩阵 |
 |---|---|---|
-| `None` | 不配准 | 2×3 单位变换 |
+| `None` | 返回输入的独立副本 | 2×3 单位变换 |
 | `Translation` | ECC 平移 | 2×3 |
 | `Affine` | ECC 仿射 | 2×3 |
 | `FeatureHomography` | SIFT + RANSAC 单应性 | 3×3 |
@@ -53,15 +59,21 @@ float32 输入已经处于 `[0, 1]`。输出裁剪到 `[0, 1]` 后恢复原始�
 不表示像素值不发生变化。方法选择示例：
 
 ```cpp
-mif::FusionOptions options;
-options.alignment = mif::Alignment::FeatureHomography; // 或 EccHomography
-auto result = mif::fuse(images, options);
+#include <mif/registration.hpp>
+
+mif::RegistrationOptions options;
+options.method = mif::Alignment::FeatureHomography; // 或 EccHomography
+auto registered = mif::registerImages(images, options);
+// registered.images 保留原位深，可保存、检查或交给 mif::fuse()。
 ```
 
 ```python
-options = mif.FusionOptions()
-options.alignment = mif.Alignment.FEATURE_HOMOGRAPHY  # 或 ECC_HOMOGRAPHY
-result = mif.fuse_detailed(images, options)
+import mif
+
+options = mif.RegistrationOptions()
+options.method = mif.Alignment.FEATURE_HOMOGRAPHY  # 或 ECC_HOMOGRAPHY
+registered = mif.register_images(images, options)
+result = mif.fuse(registered["images"])
 ```
 
 ## 3. 清晰度计算
@@ -93,8 +105,9 @@ w = mean(a)*I + mean(b)
 ## 5. 两种融合方法
 
 融合方法位于 `algorithms/src/fusion/`，每个方法文件包含权重生成和重建流程。
-该目录的 `fusion.cpp` 只负责方法选择，`focus_measure.cpp` 提供共用的清晰度与初始决策图计算。
-完整处理流程由 `algorithms/src/pipeline.cpp` 组织。
+该目录的 `fusion.cpp` 实现公开 `fuse()`：校验融合参数、归一化输入、选择方法、
+恢复位深并整理来源索引和可选权重。`focus_measure.cpp` 提供共用的清晰度与初始决策图计算。
+`algorithms/src/pipeline.cpp` 仅组合独立的配准与融合入口，并换算总进度。
 
 ### 双尺度引导滤波（默认）
 
@@ -113,23 +126,39 @@ w = mean(a)*I + mean(b)
 融合对应频带后逐层上采样重建。显式传递每层尺寸，支持奇数宽高；层数根据
 图像大小自动限制。逐张构建金字塔并累加，避免同时持有全部输入金字塔。
 
-## 默认参数
+## 参数
 
-| 参数 | 默认值 | 含义 |
-|---|---:|---|
-| focus_window | 9 | 清晰度统计窗口，奇数 |
-| base_radius | 15 | 基础层滤波和基础权重半径 |
-| detail_radius | 3 | 细节权重半径 |
-| base_epsilon | 0.01 | 基础权重正则化 |
-| detail_epsilon | 0.0001 | 细节权重正则化 |
-| pyramid_levels | 5 | 金字塔层数上限 |
-| alignment_iterations | 150 | ECC 最大迭代次数 |
-| alignment_epsilon | 1e-5 | ECC 收敛阈值 |
-| alignment_max_size | 1200 | 所有配准方法的工作图像最长边 |
-| alignment_max_features | 4000 | SIFT 最多保留的特征数 |
-| alignment_match_ratio | 0.75 | SIFT 最近邻/次近邻距离比值阈值 |
-| alignment_ransac_threshold | 3.0 | RANSAC 误差阈值，工作分辨率像素 |
-| alignment_min_inlier_ratio | 0.25 | 有效匹配中 RANSAC 内点的最低比例 |
+### `FusionOptions`
+
+| 参数 | 默认值 | 范围与含义 |
+|---|---|---|
+| `method` | `GuidedFilter` | `GuidedFilter` 或 `LaplacianPyramid` |
+| `focus_measure` | `ModifiedLaplacian` | `ModifiedLaplacian` 或 `Tenengrad` |
+| `focus_window` | 9 | `[1, 255]` 内的奇数，清晰度统计窗口边长 |
+| `base_radius` | 15 | `[1, 255]`，基础层滤波和基础权重半径，仅引导滤波融合使用 |
+| `detail_radius` | 3 | `[1, 255]`，细节权重半径 |
+| `base_epsilon` | 0.01 | 有限正数，基础权重正则化，仅引导滤波融合使用 |
+| `detail_epsilon` | 0.0001 | 有限正数，细节权重正则化 |
+| `pyramid_levels` | 5 | `[1, 16]`，金字塔层数上限，包含最粗层 |
+| `keep_weight_maps` | `false` | 是否在结果中保留归一化细节权重 |
+
+### `RegistrationOptions`
+
+| 参数 | 默认值 | 范围与含义 |
+|---|---|---|
+| `method` | `None` | 上述五种配准模式之一 |
+| `iterations` | 150 | `[1, 10000]`，ECC 最大迭代次数 |
+| `epsilon` | 1e-5 | 有限正数，ECC 收敛阈值 |
+| `max_size` | 1200 | `[16, 8192]`，工作图像最长边上限，不放大小图；开启配准时工作图短边至少为 16 |
+| `max_features` | 4000 | `[64, 100000]`，SIFT 最多保留的特征数 |
+| `match_ratio` | 0.75 | 有限且在 `(0, 1)`，SIFT 最近邻/次近邻距离比值阈值 |
+| `ransac_threshold` | 3.0 | 有限正数，RANSAC 误差阈值，单位为工作分辨率像素 |
+| `min_inlier_ratio` | 0.25 | 有限且在 `(0, 1]`，RANSAC 内点最低比例；同时至少需要 6 个内点 |
+
+每个入口检查自己参数对象的所有字段，包括所选方法当前未使用的字段；
+纯融合不会检查或执行配准。上述枚举使用 C++ 写法，Python 对应成员名为全大写，
+例如 `FusionMethod.GUIDED_FILTER`、`Alignment.FEATURE_HOMOGRAPHY`。
+旧参数名的替换见 [接口迁移](sdk.md#接口迁移)。
 
 ## 实际限制
 

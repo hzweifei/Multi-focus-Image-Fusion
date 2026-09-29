@@ -1,32 +1,52 @@
-/* 全局底色和字体；样式通过 Qt 资源载入，保持各平台窗口的基本外观一致。 */
-QMainWindow, QWidget { background: #172336; color: #e8f1fc; font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; font-size: 13px; }
-/* 标题、分区标签和辅助说明；以 objectName 区分同类标签的角色。 */
+/* 深色背景衬托图像；参数区、操作与预览使用一致的留白和焦点状态。 */
+QMainWindow, QWidget { background: #142032; color: #e7eef8; font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; font-size: 13px; }
+QWidget#sidebar { background: #1b2a3e; border: 1px solid #31455f; border-radius: 10px; }
 QLabel { background: transparent; }
-QLabel#titleLabel { font-size: 24px; font-weight: 700; letter-spacing: 1px; }
-QLabel#subtitleLabel, QLabel#muted { color: #a9b8cc; }
-QLabel#sectionTitle { font-size: 14px; font-weight: 600; padding: 4px 0; color: #70dbc7; }
-QLabel#previewTitle { background: #22334b; border-radius: 5px; padding: 9px 12px; font-weight: 600; }
-/* 普通操作按钮及悬停、按下、禁用状态。 */
-QPushButton { background: #293d56; border: 1px solid #405772; border-radius: 6px; padding: 8px 12px; }
-QPushButton:hover { background: #354f6e; border-color: #6c8faf; }
-QPushButton:pressed { background: #20334b; }
-QPushButton:disabled { color: #738399; border-color: #2d4057; background: #203047; }
-/* 开始融合/取消处理共用主操作按钮，颜色突出当前任务入口。 */
-QPushButton#primaryButton { background: #56d3bd; color: #102b2a; border: none; font-weight: 700; font-size: 15px; }
-QPushButton#primaryButton:hover { background: #78e3d0; }
-QPushButton#primaryButton:disabled { background: #2d5357; color: #809a9c; }
-/* 输入列表和选中项。 */
-QListWidget { background: #111b2a; border: 1px solid #30455f; border-radius: 6px; padding: 5px; }
-QListWidget::item { padding: 9px 5px; border-radius: 3px; }
-QListWidget::item:selected { background: #31516c; color: #ffffff; }
-/* 参数组、下拉框和整数输入框。 */
-QGroupBox { border: 1px solid #3a506a; border-radius: 7px; margin-top: 16px; padding-top: 16px; }
-QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #70dbc7; font-weight: 600; }
-QComboBox, QSpinBox { background: #21344c; border: 1px solid #4b6380; border-radius: 4px; padding: 6px; min-height: 20px; }
-QComboBox:disabled, QSpinBox:disabled { color: #8090a3; border-color: #30455f; }
-QComboBox QAbstractItemView { background: #263b54; selection-background-color: #3b617e; }
-/* 任务进度、预览区分隔柄和悬浮提示。 */
-QProgressBar { border: none; background: #253b54; border-radius: 4px; color: #d8e9ef; text-align: center; font-size: 11px; }
-QProgressBar::chunk { background: #297e76; border-radius: 4px; }
-QSplitter::handle { background: #172336; width: 10px; }
-QToolTip { background: #e8f1fc; color: #172336; border: 1px solid #9bb5c9; }
+QLabel#titleLabel { font-size: 24px; font-weight: 700; }
+QLabel#subtitleLabel, QLabel#muted { color: #a6b7cd; }
+QLabel#sectionTitle { font-size: 13px; font-weight: 600; padding: 2px 0; color: #76deca; }
+QLabel#parameterHint { color: #a6b7cd; padding: 0 0 8px 0; }
+QLabel#linkedBadge { color: #83e2d1; background: #203e45; border-radius: 10px; padding: 4px 10px; font-size: 12px; }
+QLabel#previewTitle { background: #21324a; border: 1px solid #30445e; border-radius: 6px; padding: 10px 12px; font-weight: 600; }
+/* 按钮的键盘焦点与鼠标悬停都可辨认；主操作固定在参数滚动区之外。 */
+QPushButton { background: #293e57; border: 1px solid #455d7a; border-radius: 6px; padding: 7px 10px; }
+QPushButton:hover { background: #355270; border-color: #87a6c4; }
+QPushButton:focus { border-color: #76deca; }
+QPushButton:pressed { background: #1e324a; }
+QPushButton:disabled { color: #78899f; border-color: #30435b; background: #203047; }
+QPushButton#primaryButton { background: #60d9c0; color: #102b2a; border: none; font-weight: 700; font-size: 15px; }
+QPushButton#primaryButton:hover { background: #82e7d2; }
+QPushButton#primaryButton:disabled { background: #2d5357; color: #92aaa9; }
+QPushButton#resetRegistrationOptions, QPushButton#resetFusionOptions { color: #afc3db; background: transparent; border-color: #3b526d; padding: 7px; }
+QPushButton#resetRegistrationOptions:hover, QPushButton#resetFusionOptions:hover { background: #293e57; color: #ffffff; }
+/* 输入列表限制高度，为方法设置留出空间；完整路径在条目提示中显示。 */
+QListWidget { background: #111c2b; border: 1px solid #354c66; border-radius: 6px; padding: 4px; }
+QListWidget::item { padding: 7px 5px; border-radius: 3px; }
+QListWidget::item:selected { background: #31546e; color: #ffffff; }
+QListWidget::item:hover { background: #263d55; }
+/* 两个设置页分别滚动；分组本身不重复绘制外框。 */
+QTabWidget::pane { border: 1px solid #354c66; border-radius: 6px; top: -1px; }
+QTabBar::tab { background: #1b2a3e; color: #a7b9cf; padding: 9px 26px; border-bottom: 2px solid transparent; }
+QTabBar::tab:selected { color: #82e4d0; background: #23364d; border-bottom-color: #60d9c0; }
+QTabBar::tab:hover { color: #ffffff; background: #2a405a; }
+QScrollArea#parameterScroll { background: #19283b; border: none; }
+QGroupBox#registrationSettings, QGroupBox#fusionSettings { background: #19283b; border: none; margin: 0; padding: 0; }
+QWidget#registrationCommonFields, QWidget#registrationEccFields, QWidget#registrationSiftFields { background: transparent; }
+QGroupBox { border: 1px solid #354c66; border-radius: 6px; margin-top: 10px; padding-top: 8px; }
+QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; color: #a9c2da; }
+/* 整数与小数控件使用相同的尺寸、禁用状态和高对比键盘焦点。 */
+QComboBox, QSpinBox, QDoubleSpinBox { background: #22364f; border: 1px solid #496583; border-radius: 5px; padding: 5px 7px; min-height: 20px; selection-background-color: #39617a; }
+QSpinBox, QDoubleSpinBox { padding: 3px 7px; min-height: 18px; }
+QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus { border-color: #73dfc7; }
+QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled { color: #8192a8; border-color: #30465e; background: #1d2e43; }
+QComboBox QAbstractItemView { background: #263b54; selection-background-color: #3b617e; border: 1px solid #52718e; padding: 3px; }
+/* 滚动条、进度和分隔柄保留明确的抓取区域。 */
+QScrollBar:vertical { background: #172638; width: 10px; margin: 0; }
+QScrollBar::handle:vertical { background: #47627e; border-radius: 4px; min-height: 28px; }
+QScrollBar::handle:vertical:hover { background: #6485a4; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
+QProgressBar { border: none; background: #243c54; border-radius: 4px; color: #e0f1f5; text-align: center; font-size: 11px; }
+QProgressBar::chunk { background: #26897b; border-radius: 4px; }
+QSplitter::handle { background: #142032; width: 10px; }
+QToolTip { background: #e8f1fc; color: #172336; border: 1px solid #9bb5c9; padding: 5px; }

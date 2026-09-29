@@ -1,7 +1,7 @@
 """Python 接口回归测试，可直接运行或由 unittest 发现。
 
-运行前需准备可导入的 mif 扩展和 NumPy。覆盖精度、内存归属、切片输入、
-诊断字段及异常映射；具体图像融合质量由 C++ 测试验证。
+运行前需准备可导入的 mif 扩展和 NumPy。覆盖独立配准与融合的配置边界、
+精度、内存归属、切片输入、组合等价性和异常；算法质量由 C++ 测试进一步验证。
 """
 import gc
 import os
@@ -74,55 +74,101 @@ class FusionTests(unittest.TestCase):
         options.keep_weight_maps = True
         result = mif.fuse_detailed([np.full((21, 33), 10000, np.uint16), np.full((21, 33), 50000, np.uint16)], options)
         gc.collect()
-        self.assertEqual(result["crop"], (0, 0, 33, 21))
+        self.assertEqual(set(result), {"image", "focus_indices", "weights"})
         self.assertEqual(result["focus_indices"].dtype, np.int32)
-        self.assertEqual(len(result["transforms"]), 2)
-        # 新增单应性模式时，未配准的旧接口仍保持 2×3 矩阵，避免破坏已有调用。
-        for transform in result["transforms"]:
-            self.assertEqual(transform.shape, (2, 3))
-            self.assertEqual(transform.dtype, np.float32)
         np.testing.assert_allclose(sum(result["weights"]), 1, atol=1e-6)
         np.testing.assert_allclose(result["image"], 30000, atol=1)
 
-    def test_homography_options(self):
-        """两种单应性枚举可赋值，新增参数的默认值和 Python 可写属性保持一致。"""
-        options = mif.FusionOptions()
+    def test_registration_options(self):
+        """配准方法与参数只在 RegistrationOptions 中配置，默认值由核心提供。"""
+        options = mif.RegistrationOptions()
+        self.assertEqual(options.method, mif.Alignment.NONE)
         self.assertNotEqual(mif.Alignment.FEATURE_HOMOGRAPHY, mif.Alignment.ECC_HOMOGRAPHY)
         for alignment in (mif.Alignment.FEATURE_HOMOGRAPHY, mif.Alignment.ECC_HOMOGRAPHY):
-            options.alignment = alignment
-            self.assertEqual(options.alignment, alignment)
+            options.method = alignment
+            self.assertEqual(options.method, alignment)
         for field, default, changed in (
-                ("alignment_max_features", 4000, 5000),
-                ("alignment_match_ratio", 0.75, 0.8),
-                ("alignment_ransac_threshold", 3.0, 2.5),
-                ("alignment_min_inlier_ratio", 0.25, 0.5)):
+                ("iterations", 150, 200), ("epsilon", 1e-5, 1e-6), ("max_size", 1200, 600),
+                ("max_features", 4000, 5000), ("match_ratio", 0.75, 0.8),
+                ("ransac_threshold", 3.0, 2.5), ("min_inlier_ratio", 0.25, 0.5)):
             self.assertEqual(getattr(options, field), default)
             setattr(options, field, changed)
             self.assertEqual(getattr(options, field), changed)
 
+    def test_independent_option_types(self):
+        """旧混合配置属性明确移除，错误阶段的参数类型不得隐式接受或转换。"""
+        fusion = mif.FusionOptions()
+        registration = mif.RegistrationOptions()
+        image = np.full((20, 30), 100, np.uint8)
+        for old_field in ("alignment", "alignment_iterations", "alignment_epsilon", "alignment_max_size",
+                          "alignment_max_features", "alignment_match_ratio", "alignment_ransac_threshold",
+                          "alignment_min_inlier_ratio"):
+            self.assertFalse(hasattr(fusion, old_field))
+            with self.assertRaises(AttributeError):
+                setattr(fusion, old_field, 1)
+        self.assertFalse(hasattr(registration, "focus_window"))
+        with self.assertRaises(TypeError):
+            mif.fuse([image, image], registration)
+        with self.assertRaises(TypeError):
+            mif.register_images([image, image], fusion)
+        with self.assertRaises(TypeError):
+            mif.register_and_fuse([image, image], fusion, registration)
+
+    def test_registration_none_ownership(self):
+        """NONE 也生成独立图像，保留全部 dtype/通道，并支持非连续只读切片。"""
+        for dtype in (np.uint8, np.uint16, np.float32):
+            for shape in ((23, 62), (23, 62, 3)):
+                with self.subTest(dtype=dtype, shape=shape):
+                    backing = np.random.default_rng(42).random(shape).astype(np.float32)
+                    if dtype != np.float32:
+                        backing = (backing * np.iinfo(dtype).max).astype(dtype)
+                    image = backing[:, ::2]
+                    image.flags.writeable = False
+                    original = image.copy()
+                    result = mif.register_images([image, image])
+                    self.assertEqual(set(result), {"images", "crop", "transforms"})
+                    self.assertEqual(result["crop"], (0, 0, 31, 23))
+                    aligned = result["images"]
+                    transforms = result["transforms"]
+                    del result
+                    gc.collect()
+                    for output in aligned:
+                        self.assertEqual(output.dtype, dtype)
+                        self.assertFalse(np.shares_memory(output, image))
+                        np.testing.assert_array_equal(output, original)
+                    self.assertFalse(np.shares_memory(aligned[0], aligned[1]))
+                    for transform in transforms:
+                        self.assertEqual(transform.dtype, np.float32)
+                        np.testing.assert_array_equal(transform, np.eye(2, 3))
+                    aligned[0][:] = 0
+                    transforms[0][:] = 0
+                    np.testing.assert_array_equal(aligned[1], original)
+                    np.testing.assert_array_equal(image, original)
+                    np.testing.assert_array_equal(transforms[1], np.eye(2, 3))
+
     def test_homography_diagnostics_and_ownership(self):
-        """两种模式返回 3×3 变换；结果离开 C++ 后有效，写结果不能修改输入。"""
+        """两种单应性独立返回配准图和 3×3 变换，支持只读切片并可继续纯融合。"""
         for alignment in (mif.Alignment.FEATURE_HOMOGRAPHY, mif.Alignment.ECC_HOMOGRAPHY):
             with self.subTest(alignment=alignment):
-                image = alignment_texture()
-                images = [image.copy(), image.copy()]
+                backing = np.repeat(alignment_texture(), 2, axis=1)
+                image = backing[:, ::2]
+                images = [image, image]
                 originals = [source.copy() for source in images]
                 for source in images:
                     source.flags.writeable = False
-                options = mif.FusionOptions()
-                options.alignment = alignment
-                options.keep_weight_maps = True
-                result = mif.fuse_detailed(images, options)
-                output = result["image"]
+                options = mif.RegistrationOptions()
+                options.method = alignment
+                result = mif.register_images(images, options)
+                aligned = result["images"]
                 transforms = result["transforms"]
-                weights = result["weights"]
-                indices = result["focus_indices"]
                 x, y, width, height = result["crop"]
                 # 清除字典、参数和临时对象，验证各返回数组自行维持所需的底层存储。
                 del result, options
                 gc.collect()
-                self.assertEqual(output.shape, (height, width))
-                self.assertEqual(output.dtype, np.uint8)
+                for output in aligned:
+                    self.assertEqual(output.shape, (height, width))
+                    self.assertEqual(output.dtype, np.uint8)
+                    np.testing.assert_allclose(output, image[y:y + height, x:x + width], atol=1)
                 self.assertGreater(width * height, image.size * 0.9)
                 self.assertEqual(len(transforms), 2)
                 for transform in transforms:
@@ -130,35 +176,108 @@ class FusionTests(unittest.TestCase):
                     self.assertEqual(transform.dtype, np.float32)
                     self.assertTrue(np.isfinite(transform).all())
                     np.testing.assert_allclose(transform, np.eye(3), atol=0.01, rtol=0)
-                np.testing.assert_allclose(output, image[y:y + height, x:x + width], atol=1)
-                np.testing.assert_allclose(sum(weights), 1, atol=1e-6)
-                self.assertEqual(indices.shape, output.shape)
-                self.assertEqual(indices.dtype, np.int32)
                 for source, original in zip(images, originals):
-                    self.assertFalse(np.shares_memory(source, output))
+                    for output in aligned:
+                        self.assertFalse(np.shares_memory(source, output))
                     np.testing.assert_array_equal(source, original)
+                fused = mif.fuse_detailed(aligned)
+                np.testing.assert_allclose(fused["image"], image[y:y + height, x:x + width], atol=1)
+                self.assertEqual(set(fused), {"image", "focus_indices", "weights"})
                 # 可写输出之间也不应错误复用矩阵存储，第一张变换的修改不能污染第二张。
                 transforms[0][:] = 0
                 np.testing.assert_allclose(transforms[1], np.eye(3), atol=0.01, rtol=0)
-                output[:] = 0
-                weights[0][:] = 0
+                second_aligned = aligned[1].copy()
+                aligned[0][:] = 0
+                np.testing.assert_array_equal(aligned[1], second_aligned)
                 for source, original in zip(images, originals):
                     np.testing.assert_array_equal(source, original)
 
-    def test_homography_parameter_validation(self):
-        """新增参数越界及 NaN/无穷大在核心入口被拒绝，即使当前未开启配准。"""
+    def test_registration_parameter_validation(self):
+        """配准参数在配准入口被拒绝；非法配准配置不妨碍单独调用纯融合。"""
         image = np.zeros((20, 30), np.uint8)
         for field, values in (
-                ("alignment_max_features", (63, 100001)),
-                ("alignment_match_ratio", (0.0, 1.0, -0.1, np.nan, np.inf)),
-                ("alignment_ransac_threshold", (0.0, -1.0, np.nan, np.inf)),
-                ("alignment_min_inlier_ratio", (0.0, -0.1, 1.1, np.nan, np.inf))):
+                ("iterations", (0, 10001)), ("epsilon", (0.0, -1.0, np.nan, np.inf)),
+                ("max_size", (15, 8193)), ("max_features", (63, 100001)),
+                ("match_ratio", (0.0, 1.0, -0.1, np.nan, np.inf)),
+                ("ransac_threshold", (0.0, -1.0, np.nan, np.inf)),
+                ("min_inlier_ratio", (0.0, -0.1, 1.1, np.nan, np.inf))):
             for value in values:
                 with self.subTest(field=field, value=value):
-                    options = mif.FusionOptions()
+                    options = mif.RegistrationOptions()
                     setattr(options, field, value)
                     with self.assertRaises(ValueError):
-                        mif.fuse([image, image], options)
+                        mif.register_images([image, image], options)
+                    np.testing.assert_array_equal(mif.fuse([image, image]), image)
+
+    def test_fusion_validation_does_not_affect_registration(self):
+        """融合参数错误只影响融合及组合流程，不参与单独配准的校验。"""
+        image = np.full((20, 30), 100, np.uint8)
+        for field, value in (("focus_window", 2), ("base_radius", 0), ("detail_radius", 0),
+                             ("base_epsilon", np.nan), ("detail_epsilon", 0.0), ("pyramid_levels", 0)):
+            with self.subTest(field=field):
+                options = mif.FusionOptions()
+                setattr(options, field, value)
+                with self.assertRaises(ValueError):
+                    mif.fuse([image, image], options)
+                with self.assertRaises(ValueError):
+                    mif.register_and_fuse([image, image], fusion_options=options)
+                registered = mif.register_images([image, image])
+                np.testing.assert_array_equal(registered["images"][0], image)
+
+    def test_registration_image_validation_and_failure(self):
+        """独立配准检查输入并暴露求解失败，不因拆分接口而静默接受无效图像。"""
+        good = np.zeros((20, 30), np.uint8)
+        for images in ([], [good], [good, good[:, :-1]], [good, good.astype(np.uint16)],
+                       [good.astype(np.float64)] * 2, [np.zeros((20, 30, 4), np.uint8)] * 2,
+                       [np.full((20, 30), np.nan, np.float32)] * 2,
+                       [np.full((20, 30), 1.1, np.float32)] * 2):
+            with self.assertRaises((ValueError, TypeError)):
+                mif.register_images(images)
+        for method in (mif.Alignment.TRANSLATION, mif.Alignment.FEATURE_HOMOGRAPHY):
+            options = mif.RegistrationOptions()
+            options.method = method
+            with self.assertRaises(RuntimeError):
+                mif.register_images([good, good], options)
+
+    def test_explicit_stages_match_pipeline(self):
+        """真实位移输入在各精度和方法下，显式两步与组合入口具有相同结果和元数据。"""
+        texture = alignment_texture()
+        shifted = np.roll(texture, (1, 2), axis=(0, 1))
+        methods = (mif.Alignment.NONE, mif.Alignment.TRANSLATION, mif.Alignment.AFFINE,
+                   mif.Alignment.FEATURE_HOMOGRAPHY, mif.Alignment.ECC_HOMOGRAPHY)
+        for dtype in (np.uint8, np.uint16, np.float32):
+            scale = 257 if dtype == np.uint16 else 1 / 255 if dtype == np.float32 else 1
+            images = [(image.astype(np.float32) * scale).astype(dtype) for image in (texture, shifted)]
+            for method in methods:
+                registration_options = mif.RegistrationOptions()
+                registration_options.method = method
+                registered = mif.register_images(images, registration_options)
+                for fusion_method in (mif.FusionMethod.GUIDED_FILTER, mif.FusionMethod.LAPLACIAN_PYRAMID):
+                    with self.subTest(dtype=dtype, registration=method, fusion=fusion_method):
+                        fusion_options = mif.FusionOptions()
+                        fusion_options.method = fusion_method
+                        fusion_options.keep_weight_maps = True
+                        explicit = mif.fuse_detailed(registered["images"], fusion_options)
+                        combined = mif.register_and_fuse(images, registration_options, fusion_options)
+                        self.assertEqual(set(combined), {"image", "focus_indices", "weights", "crop", "transforms"})
+                        self.assertEqual(combined["image"].dtype, dtype)
+                        self.assertEqual(combined["crop"], registered["crop"])
+                        np.testing.assert_array_equal(combined["image"], explicit["image"])
+                        np.testing.assert_array_equal(combined["focus_indices"], explicit["focus_indices"])
+                        self.assertEqual(len(combined["weights"]), len(images))
+                        self.assertEqual(len(combined["transforms"]), len(images))
+                        for actual, expected in zip(combined["weights"], explicit["weights"]):
+                            np.testing.assert_array_equal(actual, expected)
+                        for actual, expected in zip(combined["transforms"], registered["transforms"]):
+                            np.testing.assert_array_equal(actual, expected)
+
+    def test_pipeline_parameter_validation(self):
+        """组合入口按独立参数类型调用两个阶段，不能遗漏任一阶段的非法配置。"""
+        image = np.zeros((20, 30), np.uint8)
+        registration_options = mif.RegistrationOptions()
+        registration_options.epsilon = np.nan
+        with self.assertRaises(ValueError):
+            mif.register_and_fuse([image, image], registration_options=registration_options)
 
     def test_validation(self):
         """非法数量、形状、精度、值域与参数应转换为明确的 Python 异常。"""

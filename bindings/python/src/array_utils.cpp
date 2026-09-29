@@ -44,7 +44,7 @@ nb::ndarray<nb::numpy> toArray(const cv::Mat& image) {
     case CV_32S: dtype = nb::dtype<int32_t>(); break;
     default: dtype = nb::dtype<float>(); break;
     }
-    // capsule 拥有 Mat 对象，NumPy 数组销毁时再释放引用，因此局部 FusionResult
+    // capsule 拥有 Mat 对象，NumPy 数组销毁时再释放引用，因此局部阶段结果对象
     // 离开作用域后，Python 返回值仍然有效；用户也可独立修改返回的图像。
     nb::capsule owner(mat, [](void* pointer) noexcept { delete static_cast<cv::Mat*>(pointer); });
     storage.release();

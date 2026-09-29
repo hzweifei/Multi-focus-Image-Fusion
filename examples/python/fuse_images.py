@@ -1,7 +1,8 @@
-"""Python 调用示例：python fuse_images.py output.png focus_01.png focus_02.png
+"""纯融合调用示例：python fuse_images.py output.png focus_01.png focus_02.png
 
 运行前安装 mif、NumPy 和 OpenCV 的 Python 包。至少传入两张图像，可在末尾
-追加更多输入；16 位结果使用 PNG 或 TIFF 保存，浮点结果使用 TIFF 保存。
+追加更多输入，输入须已对齐。16 位结果使用 PNG 或 TIFF 保存，浮点结果使用 TIFF。
+需要先对齐时，可运行同目录 register_images.py，或使用 mif.register_and_fuse。
 """
 import sys
 import cv2
@@ -16,6 +17,7 @@ if any(image is None for image in images):
 options = mif.FusionOptions()
 # 默认演示引导滤波融合，也可改为 mif.FusionMethod.LAPLACIAN_PYRAMID。
 options.method = mif.FusionMethod.GUIDED_FILTER
+# 此入口只执行融合；配准使用独立的 RegistrationOptions 和 register_images。
 result = mif.fuse(images, options)
 suffix = sys.argv[1].lower().rsplit(".", 1)[-1]
 # 根据输出精度限制文件格式，避免编码器自动降精度而丢失数据。

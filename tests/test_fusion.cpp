@@ -9,6 +9,8 @@
 
 // 核心算法回归测试入口；CTest 通过用例名分别运行，失败原因可独立定位。
 void testFocusMeasure();
+void testRegistrationAlignment();
+void testPipeline();
 void testRegistrationHomography();
 void testRegistrationEcc();
 void testRegistrationFailure();
@@ -166,29 +168,6 @@ void cancellation() {
     }
 }
 
-// 用已知变换合成第二张图，检查配准矩阵方向、位移量和共同有效区域裁剪。
-// 无纹理输入不能可靠估计配准，应明确失败，避免返回看似成功的无效矩阵。
-void alignment() {
-    const auto image = texture(161, 241);
-    for (auto mode : {mif::Alignment::Translation, mif::Alignment::Affine}) {
-        cv::Mat warp = (cv::Mat_<float>(2, 3) << 1, 0, 2.25, 0, 1, -1.75);
-        if (mode == mif::Alignment::Affine) { warp.at<float>(0, 0) = 1.005f; warp.at<float>(0, 1) = 0.003f; }
-        cv::Mat shifted;
-        cv::warpAffine(image, shifted, warp, image.size(), cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
-        mif::FusionOptions o; o.alignment = mode;
-        const auto result = mif::fuse({image, shifted}, o);
-        require(result.crop.area() < image.rows * image.cols, "Alignment did not crop invalid borders");
-        require(result.crop.width > image.cols - 15 && result.crop.height > image.rows - 15, "Alignment crop is excessive");
-        require(std::abs(result.transforms[1].at<float>(0, 2) - 2.25f) < 0.65f, "Wrong transform convention or translation");
-        require(mae(result.image, image(result.crop)) < 8, "Aligned fusion differs excessively from reference");
-    }
-    mif::FusionOptions o; o.alignment = mif::Alignment::Translation;
-    cv::Mat flat(32, 32, CV_8U, cv::Scalar(40));
-    bool failed = false;
-    try { mif::fuse({flat, flat}, o); } catch (const std::runtime_error&) { failed = true; }
-    require(failed, "Textureless alignment must fail explicitly");
-}
-
 // 第 257 张图拥有唯一纹理，获胜索引应为 256，确保索引没有被截断到 8 位。
 void largeStack() {
     std::vector<cv::Mat> images(257, cv::Mat::zeros(13, 15, CV_8U));
@@ -204,7 +183,7 @@ int main(int argc, char** argv) {
     const std::map<std::string, std::function<void()>> tests{
         {"focus", testFocusMeasure}, {"quality", quality}, {"identity", identity},
         {"validation", validation}, {"weights", weights}, {"cancellation", cancellation},
-        {"alignment", alignment}, {"registration_homography", testRegistrationHomography},
+        {"pipeline", testPipeline}, {"alignment", testRegistrationAlignment}, {"registration_homography", testRegistrationHomography},
         {"registration_ecc", testRegistrationEcc}, {"registration_failure", testRegistrationFailure},
         {"large_stack", largeStack}};
     try {

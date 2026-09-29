@@ -3,6 +3,7 @@ add_library(mif_desktop_ui STATIC
     main_window.cpp main_window.hpp main_window.ui
     image_io.cpp image_io.hpp
     widgets/image_view.cpp widgets/image_view.hpp
+    widgets/registration_settings.cpp widgets/registration_settings.hpp
     workers/fusion_worker.cpp workers/fusion_worker.hpp
 )
 # AUTOMOC 处理信号槽，AUTOUIC 编译 Qt Designer 的主窗口外框。

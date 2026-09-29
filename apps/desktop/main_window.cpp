@@ -2,7 +2,10 @@
 #include "ui_main_window.h"
 #include "image_io.hpp"
 #include "widgets/image_view.hpp"
+#include "widgets/registration_settings.hpp"
 #include "workers/fusion_worker.hpp"
+#include <mif/fusion_options.hpp>
+#include <mif/registration_options.hpp>
 #include <QCloseEvent>
 #include <QCollator>
 #include <QComboBox>
@@ -21,8 +24,11 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QScrollArea>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QTabBar>
+#include <QTabWidget>
 #include <QVBoxLayout>
 #include <algorithm>
 
@@ -56,11 +62,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui_(std::make_uni
 void MainWindow::createSidebar() {
     // 左侧第一组：导入、浏览和移除图像。完整路径保存在条目的 Qt::UserRole 中。
     auto* sidebar = new QWidget(this);
-    sidebar->setMinimumWidth(270);
-    sidebar->setMaximumWidth(330);
+    sidebar->setObjectName("sidebar");
+    sidebar->setMinimumWidth(320);
+    sidebar->setMaximumWidth(360);
     auto* side = new QVBoxLayout(sidebar);
-    side->setContentsMargins(0, 0, 0, 0);
-    count_ = new QLabel(QStringLiteral("01  /  图像栈"));
+    side->setContentsMargins(12, 12, 12, 12);
+    side->setSpacing(10);
+    count_ = new QLabel(QStringLiteral("01  /  输入图像"));
     count_->setObjectName("sectionTitle");
     side->addWidget(count_);
     auto* imports = new QHBoxLayout;
@@ -72,7 +80,9 @@ void MainWindow::createSidebar() {
     files_ = new QListWidget;
     files_->setObjectName("imageList");
     files_->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    files_->setMinimumHeight(150);
+    files_->setMinimumHeight(86);
+    files_->setMaximumHeight(150);
+    files_->setToolTip(QStringLiteral("第一张图片作为配准参考；单独添加文件继续追加，导入文件夹会替换当前批次。"));
     side->addWidget(files_, 1);
     auto* edits = new QHBoxLayout;
     remove_ = new QPushButton(QStringLiteral("移除选中"));
@@ -80,40 +90,73 @@ void MainWindow::createSidebar() {
     edits->addWidget(remove_); edits->addWidget(clear_);
     side->addLayout(edits);
 
-    // 左侧第二组：每个条目保存对应的核心枚举值，显示顺序可以独立调整。
-    parameters_ = new QGroupBox(QStringLiteral("02  /  融合设置"));
-    auto* form = new QFormLayout(parameters_);
+    // 参数独立分页，长表单在页内滚动；输入列表与运行按钮不会被参数挤出窗口。
+    auto* settings_title = new QLabel(QStringLiteral("02  /  处理设置"));
+    settings_title->setObjectName("sectionTitle");
+    side->addWidget(settings_title);
+    auto* tabs = new QTabWidget;
+    tabs->setObjectName("parameterTabs");
+    tabs->setMinimumHeight(230);
+    tabs->setDocumentMode(true);
+    tabs->tabBar()->setExpanding(true);
+    tabs->tabBar()->setDrawBase(false);
+    auto addPage = [tabs](QWidget* content, const QString& title) {
+        auto* scroll = new QScrollArea;
+        scroll->setObjectName("parameterScroll");
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        scroll->setWidget(content);
+        tabs->addTab(scroll, title);
+    };
+    registration_parameters_ = new RegistrationSettings;
+    addPage(registration_parameters_, QStringLiteral("配准"));
+
+    // 融合设置独立于配准选项；两组配置分别保存，只由一键处理流程串联执行。
+    fusion_parameters_ = new QGroupBox;
+    fusion_parameters_->setObjectName("fusionSettings");
+    auto* form = new QFormLayout(fusion_parameters_);
+    form->setContentsMargins(12, 14, 12, 14);
     form->setVerticalSpacing(12);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    form->setAlignment(Qt::AlignTop);
+    auto* fusion_note = new QLabel(QStringLiteral("合成各张图像中的清晰区域。已对齐的图片可以直接融合。"));
+    fusion_note->setObjectName("parameterHint");
+    fusion_note->setWordWrap(true);
+    form->addRow(fusion_note);
     method_ = new QComboBox;
+    method_->setObjectName("fusionMethod");
     method_->addItem(QStringLiteral("引导滤波"), static_cast<int>(FusionMethod::GuidedFilter));
     method_->addItem(QStringLiteral("拉普拉斯金字塔"), static_cast<int>(FusionMethod::LaplacianPyramid));
     focus_ = new QComboBox;
     focus_->addItem(QStringLiteral("改进拉普拉斯"), static_cast<int>(FocusMeasure::ModifiedLaplacian));
     focus_->addItem(QStringLiteral("Tenengrad 梯度"), static_cast<int>(FocusMeasure::Tenengrad));
-    alignment_ = new QComboBox;
-    alignment_->setObjectName("alignmentMode");
-    alignment_->addItem(QStringLiteral("关闭（图片已对齐）"), static_cast<int>(Alignment::None));
-    alignment_->addItem(QStringLiteral("ECC 平移"), static_cast<int>(Alignment::Translation));
-    alignment_->addItem(QStringLiteral("ECC 仿射"), static_cast<int>(Alignment::Affine));
-    alignment_->addItem(QStringLiteral("SIFT 特征点单应性"), static_cast<int>(Alignment::FeatureHomography));
-    alignment_->addItem(QStringLiteral("ECC 单应性"), static_cast<int>(Alignment::EccHomography));
-    alignment_->setToolTip(QStringLiteral("以第一张为参考，配准后裁剪共有区域。\n"
-        "ECC 平移/仿射适合小幅位移或倍率变化；单应性可处理平面透视变化。\n"
-        "SIFT 需要足够可匹配的纹理；ECC 单应性适合初始偏差较小的图像。"));
     window_ = new QSpinBox; window_->setRange(1, 99); window_->setSingleStep(2); window_->setValue(9);
     window_->setToolTip(QStringLiteral("清晰度统计窗口，必须为奇数。增大可抑制噪声，但可能损失细小结构。"));
     radius_ = new QSpinBox; radius_->setRange(1, 64); radius_->setValue(3);
     levels_ = new QSpinBox; levels_->setRange(1, 10); levels_->setValue(5);
+    QWidget* fusion_controls[] = {method_, focus_, window_, radius_, levels_};
+    for (auto* control : fusion_controls)
+        control->installEventFilter(this);
     form->addRow(QStringLiteral("融合方法"), method_);
     form->addRow(QStringLiteral("清晰度"), focus_);
-    form->addRow(QStringLiteral("自动配准"), alignment_);
     form->addRow(QStringLiteral("统计窗口"), window_);
     form->addRow(QStringLiteral("细节半径"), radius_);
     form->addRow(QStringLiteral("金字塔层数"), levels_);
-    side->addWidget(parameters_);
-    auto* note = new QLabel(QStringLiteral("支持灰度 / 彩色 · 保留 8 / 16 位精度\n请使用同尺寸、同位深、同通道的图片。"));
-    note->setObjectName("muted"); note->setWordWrap(true);
-    side->addWidget(note);
+    levels_->setToolTip(QStringLiteral("仅拉普拉斯金字塔融合使用；实际层数还受图像尺寸限制。"));
+    auto* reset_fusion = new QPushButton(QStringLiteral("恢复融合默认值"));
+    reset_fusion->setObjectName("resetFusionOptions");
+    form->addRow(reset_fusion);
+    connect(reset_fusion, &QPushButton::clicked, this, [this] {
+        const FusionOptions defaults;
+        method_->setCurrentIndex(method_->findData(static_cast<int>(defaults.method)));
+        focus_->setCurrentIndex(focus_->findData(static_cast<int>(defaults.focus_measure)));
+        window_->setValue(defaults.focus_window);
+        radius_->setValue(defaults.detail_radius);
+        levels_->setValue(defaults.pyramid_levels);
+    });
+    addPage(fusion_parameters_, QStringLiteral("融合"));
+    side->addWidget(tabs, 4);
     run_ = new QPushButton(QStringLiteral("开始融合"));
     run_->setObjectName("primaryButton"); run_->setMinimumHeight(44);
     side->addWidget(run_);
@@ -124,9 +167,14 @@ void MainWindow::createPreviewArea() {
     // 右侧工具栏和并排预览区。两个预览都只显示 8 位副本，导出仍使用原始结果。
     auto* workspace = new QVBoxLayout;
     auto* toolbar = new QHBoxLayout;
-    auto* heading = new QLabel(QStringLiteral("03  /  预览与结果"));
+    auto* heading = new QLabel(QStringLiteral("03  /  图像对比"));
     heading->setObjectName("sectionTitle");
-    toolbar->addWidget(heading); toolbar->addStretch();
+    toolbar->addWidget(heading);
+    auto* linked = new QLabel(QStringLiteral("视野联动"));
+    linked->setObjectName("linkedBadge");
+    linked->setToolTip(QStringLiteral("两个预览同步缩放和平移，方便对比相同位置的细节。"));
+    toolbar->addWidget(linked);
+    toolbar->addStretch();
     auto* fit = new QPushButton(QStringLiteral("适应窗口"));
     fit->setObjectName("fitPreviews");
     save_ = new QPushButton(QStringLiteral("导出结果"));
@@ -154,7 +202,7 @@ void MainWindow::createPreviewArea() {
     result_view_->setObjectName("resultPreview");
     previews->setChildrenCollapsible(false);
     workspace->addWidget(previews, 1);
-    auto* tip = new QLabel(QStringLiteral("两侧预览联动：滚轮缩放 · 拖动平移 · 双击适应窗口\n拖入图片可追加，拖入文件夹会切换为新批次。"));
+    auto* tip = new QLabel(QStringLiteral("滚轮缩放  ·  拖动平移  ·  双击适应窗口"));
     tip->setObjectName("muted"); workspace->addWidget(tip);
     status_ = new QLabel(QStringLiteral("添加至少两张不同焦点的图片，即可开始。"));
     status_->setWordWrap(true); workspace->addWidget(status_);
@@ -196,6 +244,15 @@ void MainWindow::connectActions() {
 MainWindow::~MainWindow() {
     // 常规关闭由 closeEvent 异步等待；这里保证程序直接析构窗口时也能安全退出。
     if (worker_) { worker_->requestInterruption(); worker_->wait(); }
+}
+
+bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (event->type() == QEvent::Wheel) {
+        // 保持 ignored，使外层滚动区继续接收滚轮；数值仍可键入或通过箭头调整。
+        event->ignore();
+        return true;
+    }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::addPaths(const QStringList& paths) {
@@ -281,12 +338,13 @@ void MainWindow::updateControls() {
     add_->setEnabled(!busy); folder_->setEnabled(!busy);
     remove_->setEnabled(!busy && !files_->selectedItems().isEmpty());
     clear_->setEnabled(!busy && files_->count() > 0);
-    parameters_->setEnabled(!busy);
+    registration_parameters_->setEnabled(!busy);
+    fusion_parameters_->setEnabled(!busy);
     levels_->setEnabled(method_->currentData().toInt() == static_cast<int>(FusionMethod::LaplacianPyramid));
     run_->setEnabled(busy || files_->count() >= 2);
     run_->setText(busy ? QStringLiteral("取消处理") : QStringLiteral("开始融合"));
     save_->setEnabled(!busy && !result_.empty());
-    count_->setText(QStringLiteral("01  /  图像栈 · %1 张").arg(files_->count()));
+    count_->setText(QStringLiteral("01  /  输入图像 · %1 张").arg(files_->count()));
 }
 
 void MainWindow::startFusion() {
@@ -299,18 +357,18 @@ void MainWindow::startFusion() {
     if (window_->value() % 2 == 0) {
         status_->setText(QStringLiteral("统计窗口必须为奇数，例如 7、9 或 11。")); return;
     }
-    // 将控件值复制为本次任务的参数快照，后台线程不会读取界面控件。
-    FusionOptions options;
+    // 配准和融合分别建立参数快照，后台线程只接收值，不读取界面控件。
+    const RegistrationOptions registration_options = registration_parameters_->options();
+    FusionOptions fusion_options;
     // 从条目数据读取枚举，不将下拉框位置当作模式值；新增或重排选项不会改变含义。
-    options.method = static_cast<FusionMethod>(method_->currentData().toInt());
-    options.focus_measure = static_cast<FocusMeasure>(focus_->currentData().toInt());
-    options.alignment = static_cast<Alignment>(alignment_->currentData().toInt());
-    options.focus_window = window_->value(); options.detail_radius = radius_->value();
-    options.pyramid_levels = levels_->value();
+    fusion_options.method = static_cast<FusionMethod>(method_->currentData().toInt());
+    fusion_options.focus_measure = static_cast<FocusMeasure>(focus_->currentData().toInt());
+    fusion_options.focus_window = window_->value(); fusion_options.detail_radius = radius_->value();
+    fusion_options.pyramid_levels = levels_->value();
     QStringList paths;
     for (int i = 0; i < files_->count(); ++i) paths.push_back(files_->item(i)->data(Qt::UserRole).toString());
     clearResult();
-    worker_ = new FusionWorker(paths, options, this);
+    worker_ = new FusionWorker(paths, registration_options, fusion_options, this);
     // 信号从工作线程发出，Qt 将下面的接收回调排入界面线程执行。
     connect(worker_, &FusionWorker::progress, this, [this](int value, const QString& stage) {
         progress_->setValue(value);

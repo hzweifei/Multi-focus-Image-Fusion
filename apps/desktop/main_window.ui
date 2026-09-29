@@ -7,14 +7,14 @@
   <property name="windowTitle"><string>Multi Focus · 多聚焦图像融合</string></property>
   <widget class="QWidget" name="centralwidget">
    <layout class="QVBoxLayout" name="rootLayout">
-    <property name="spacing"><number>16</number></property>
+    <property name="spacing"><number>12</number></property>
     <property name="leftMargin"><number>22</number></property>
     <property name="topMargin"><number>18</number></property>
     <property name="rightMargin"><number>22</number></property>
     <property name="bottomMargin"><number>18</number></property>
     <!-- 顶部标题的对象名与 style.qss 的选择器一致。 -->
-    <item><widget class="QLabel" name="titleLabel"><property name="text"><string>MULTI FOCUS  /  多聚焦图像融合</string></property></widget></item>
-    <item><widget class="QLabel" name="subtitleLabel"><property name="text"><string>将不同焦平面的清晰细节，合成为一张图像。</string></property></widget></item>
+    <item><widget class="QLabel" name="titleLabel"><property name="text"><string>多聚焦图像融合</string></property></widget></item>
+    <item><widget class="QLabel" name="subtitleLabel"><property name="text"><string>MULTI FOCUS  /  导入同一批次图像，配准后合成清晰细节。</string></property></widget></item>
     <!-- 运行时向此横向布局依次加入参数侧栏和图片预览区。 -->
     <item><layout class="QHBoxLayout" name="workspaceLayout"><property name="spacing"><number>18</number></property></layout></item>
    </layout>

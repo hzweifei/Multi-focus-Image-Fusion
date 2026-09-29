@@ -1,5 +1,5 @@
 #include "fixtures.hpp"
-#include <mif/fusion.hpp>
+#include <mif/registration.hpp>
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -80,32 +80,54 @@ void checkProjection(const cv::Mat& actual, const cv::Mat& expected, cv::Size si
 }
 
 /// 验证返回的裁剪区域在每张源图中均有完整插值覆盖，而非只看输出像素是否恰好非黑。
-void checkCoverage(const mif::FusionResult& result, cv::Size original_size) {
+void checkCoverage(const mif::RegistrationResult& result, const std::vector<cv::Mat>& originals) {
+    const cv::Size original_size = originals.front().size();
     const cv::Rect full(0, 0, original_size.width, original_size.height);
     require((result.crop & full) == result.crop && result.crop.area() > 0,
             "Crop is empty or outside the reference image");
-    require(result.image.size() == result.crop.size(), "Output does not follow the reported crop");
-    require(result.focus_indices.size() == result.crop.size() && result.focus_indices.type() == CV_32SC1,
-            "Focus indices do not follow the reported crop");
+    require(result.images.size() == originals.size() && result.transforms.size() == originals.size(),
+            "Registration result does not contain every input image");
     const cv::Mat valid(original_size, CV_32F, cv::Scalar(1));
-    for (const auto& transform : result.transforms) {
-        cv::Mat coverage;
-        cv::warpPerspective(valid, coverage, transform, original_size,
-                            cv::INTER_LINEAR | cv::WARP_INVERSE_MAP, cv::BORDER_CONSTANT);
+    for (size_t i = 0; i < originals.size(); ++i) {
+        const auto& transform = result.transforms[i];
+        const auto& image = result.images[i];
+        require(image.size() == result.crop.size(), "Registered image does not follow the reported crop");
+        require(image.type() == originals[i].type(), "Registration changed an image depth or channel count");
+        require(image.data != originals[i].data, "Registered image still borrows the input buffer");
+        const double range = originals[i].depth() == CV_8U ? 255.0 :
+                             originals[i].depth() == CV_16U ? 65535.0 : 1.0;
+        cv::Mat normalized, resampled, coverage;
+        originals[i].convertTo(normalized, CV_32F, 1.0 / range);
+        if (transform.rows == 3) {
+            cv::warpPerspective(valid, coverage, transform, original_size,
+                                cv::INTER_LINEAR | cv::WARP_INVERSE_MAP, cv::BORDER_CONSTANT);
+            cv::warpPerspective(normalized, resampled, transform, original_size,
+                                cv::INTER_LINEAR | cv::WARP_INVERSE_MAP, cv::BORDER_CONSTANT);
+        } else {
+            require(transform.size() == cv::Size(3, 2), "Unexpected registration matrix dimensions");
+            cv::warpAffine(valid, coverage, transform, original_size,
+                           cv::INTER_LINEAR | cv::WARP_INVERSE_MAP, cv::BORDER_CONSTANT);
+            cv::warpAffine(normalized, resampled, transform, original_size,
+                           cv::INTER_LINEAR | cv::WARP_INVERSE_MAP, cv::BORDER_CONSTANT);
+        }
         double minimum;
         cv::minMaxLoc(coverage(result.crop), &minimum);
         require(minimum >= 0.9999, "Crop contains pixels mixed with an invalid source border");
+        // 检查每张返回图的像素确实对应其变换与裁剪信息；只验证矩阵或融合结果会漏掉错帧。
+        cv::Mat expected;
+        resampled(result.crop).convertTo(expected, originals[i].type(), range);
+        require(cv::norm(image, expected, cv::NORM_INF) <= (image.depth() == CV_32F ? 1e-6 : 1.0),
+                "Registered pixels do not match their transform and crop metadata");
     }
 }
 
-/// 从公开入口执行测试，并确认配准、裁剪及融合均未修改调用者输入。
+/// 从独立配准入口执行测试，并确认配准与裁剪均未修改调用者输入。
 void checkStack(const std::vector<cv::Mat>& images, const std::vector<cv::Mat>& truth,
-                const mif::FusionOptions& options, double mean_limit, double maximum_limit,
+                const mif::RegistrationOptions& options, double mean_limit, double maximum_limit,
                 const std::string& label) {
     std::vector<cv::Mat> before;
     for (const auto& image : images) before.push_back(image.clone());
-    const auto result = mif::fuse(images, options);
-    require(result.image.type() == images.front().type(), label + ": output depth/channels changed");
+    const auto result = mif::registerImages(images, options);
     require(result.transforms.size() == images.size(), label + ": transform count changed");
     require(truth.size() == images.size(), "Invalid registration test fixture");
     for (size_t i = 0; i < images.size(); ++i) {
@@ -114,7 +136,7 @@ void checkStack(const std::vector<cv::Mat>& images, const std::vector<cv::Mat>& 
                         i == 0 ? 1e-6 : mean_limit, i == 0 ? 1e-6 : maximum_limit,
                         label + " image " + std::to_string(i + 1));
     }
-    checkCoverage(result, images.front().size());
+    checkCoverage(result, images);
     const double retained = static_cast<double>(result.crop.area()) /
                             static_cast<double>(images.front().total());
     require(retained > 0.70 && retained < 1.0, label + ": unexpectedly large or absent crop");
@@ -133,16 +155,16 @@ void checkComplementaryFocus(mif::Alignment alignment, const std::string& label)
     sharp(right).copyTo(source_focus(right));
     const cv::Mat truth = (cv::Mat_<double>(3, 3) <<
         1.0008, 0.0007, 1.4, -0.0006, 0.9996, -1.1, 7e-7, -6e-7, 1.0);
-    mif::FusionOptions options;
-    options.alignment = alignment;
-    options.alignment_iterations = 300;
-    options.alignment_epsilon = 1e-7;
+    mif::RegistrationOptions options;
+    options.method = alignment;
+    options.iterations = 300;
+    options.epsilon = 1e-7;
     checkStack({reference, transformed(source_focus, truth)},
                {cv::Mat::eye(3, 3, CV_64F), truth}, options, 0.45, 0.90, label);
 }
 
 /// 完全相同的高位深图像无需几何重采样损失；检查数值恢复，防止 SIFT 的 8 位
-/// 特征预处理错误地替换最终融合输入。只检查输出类型无法发现这种精度丢失。
+/// 特征预处理错误地替换原始像素。只检查输出类型无法发现这种精度丢失。
 void checkSixteenBitPrecision(mif::Alignment alignment) {
     cv::Mat image;
     registrationTexture(257, 383).convertTo(image, CV_16U, 65535.0);
@@ -152,25 +174,27 @@ void checkSixteenBitPrecision(mif::Alignment alignment) {
         for (int x = 0; x < image.cols; ++x)
             if (image.at<unsigned short>(y, x) % 257 != 0) ++low_bit_pixels;
     require(low_bit_pixels > image.total() / 2, "Precision fixture lacks meaningful 16-bit values");
-    mif::FusionOptions options;
-    options.alignment = alignment;
-    const auto result = mif::fuse({image, image}, options);
-    require(result.image.type() == CV_16UC1, "Registration reduced the output bit depth");
+    mif::RegistrationOptions options;
+    options.method = alignment;
+    const auto result = mif::registerImages({image, image}, options);
     require(cv::norm(image, before, cv::NORM_INF) == 0, "16-bit source was modified");
-    checkCoverage(result, image.size());
+    checkCoverage(result, {image, image});
     require(result.crop.area() > 0.9 * static_cast<double>(image.total()),
             "Identical 16-bit inputs lost a large image area");
-    require(cv::norm(result.image, image(result.crop), cv::NORM_INF) <= 2,
-            "Registration lost low-order information in identical 16-bit inputs");
+    for (const auto& registered : result.images) {
+        require(registered.type() == CV_16UC1, "Registration reduced the output bit depth");
+        require(cv::norm(registered, image(result.crop), cv::NORM_INF) <= 2,
+                "Registration lost low-order information in identical 16-bit inputs");
+    }
 }
 
 /// 配准失败必须有可定位到输入的序号；公开错误约定使用从 1 开始的编号。
 void expectRegistrationFailure(const std::vector<cv::Mat>& images, mif::Alignment alignment,
                                int expected_index) {
-    mif::FusionOptions options;
-    options.alignment = alignment;
+    mif::RegistrationOptions options;
+    options.method = alignment;
     try {
-        mif::fuse(images, options);
+        mif::registerImages(images, options);
     } catch (const std::runtime_error& error) {
         require(std::string(error.what()).find("image " + std::to_string(expected_index)) != std::string::npos,
                 std::string("Missing one-based failing image index: ") + error.what());
@@ -181,6 +205,46 @@ void expectRegistrationFailure(const std::vector<cv::Mat>& images, mif::Alignmen
 
 } // 匿名命名空间
 
+/// 平移与仿射仍使用 2×3 元数据；独立输出的每张配准图都必须符合相应变换。
+void testRegistrationAlignment() {
+    const auto image = texture(161, 241);
+    for (auto mode : {mif::Alignment::Translation, mif::Alignment::Affine}) {
+        cv::Mat warp = (cv::Mat_<float>(2, 3) << 1, 0, 2.25, 0, 1, -1.75);
+        if (mode == mif::Alignment::Affine) {
+            warp.at<float>(0, 0) = 1.005f;
+            warp.at<float>(0, 1) = 0.003f;
+        }
+        cv::Mat shifted;
+        cv::warpAffine(image, shifted, warp, image.size(), cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
+        mif::RegistrationOptions options;
+        options.method = mode;
+        const auto result = mif::registerImages({image, shifted}, options);
+        require(result.crop.area() < image.rows * image.cols, "Alignment did not crop invalid borders");
+        require(result.crop.width > image.cols - 15 && result.crop.height > image.rows - 15,
+                "Alignment crop is excessive");
+        require(result.transforms.size() == 2 && result.transforms[1].size() == cv::Size(3, 2) &&
+                result.transforms[1].type() == CV_32FC1, "Translation/affine must return 2 x 3 float32 matrices");
+        require(std::abs(result.transforms[1].at<float>(0, 2) - 2.25f) < 0.65f,
+                "Wrong transform convention or horizontal translation");
+        require(std::abs(result.transforms[1].at<float>(1, 2) + 1.75f) < 0.65f,
+                "Wrong vertical translation");
+        cv::Mat actual = cv::Mat::eye(3, 3, CV_32F), expected = cv::Mat::eye(3, 3, CV_32F);
+        result.transforms[1].copyTo(actual.rowRange(0, 2));
+        warp.copyTo(expected.rowRange(0, 2));
+        checkProjection(actual, expected, image.size(), 0.4, 0.9,
+                        mode == mif::Alignment::Translation ? "ECC translation" : "ECC affine");
+        checkCoverage(result, {image, shifted});
+        require(cv::norm(result.images.front(), image(result.crop), cv::NORM_INF) == 0,
+                "The reference image changed during registration");
+        // 已知变换生成源图后再对齐会有两次线性插值，允许纹理平滑带来的灰度误差。
+        // 配准本身的几何精度由上面的原图网格误差独立约束。
+        require(mae(result.images[1], image(result.crop)) < 18,
+                "Registered source differs excessively from the reference");
+    }
+    const cv::Mat flat(32, 32, CV_8U, cv::Scalar(40));
+    expectRegistrationFailure({flat, flat}, mif::Alignment::Translation, 1);
+}
+
 /// SIFT 应能恢复比 ECC 小运动用例更大的位移；三帧共同裁剪也必须保持有效覆盖。
 void testRegistrationHomography() {
     const cv::Mat reference = registrationTexture(769, 1051);
@@ -188,15 +252,15 @@ void testRegistrationHomography() {
         1.012, 0.013, 28.4, -0.009, 0.993, -19.1, 1.3e-5, -2.0e-5, 1.0);
     const cv::Mat second = (cv::Mat_<double>(3, 3) <<
         0.994, -0.008, -22.5, 0.006, 1.008, 17.3, -1.4e-5, 9e-6, 1.0);
-    mif::FusionOptions options;
-    options.alignment = mif::Alignment::FeatureHomography;
+    mif::RegistrationOptions options;
+    options.method = mif::Alignment::FeatureHomography;
     // 强制缩小奇数尺寸大图，使横纵实际缩放比例不同，覆盖原图坐标恢复路径。
-    options.alignment_max_size = 601;
+    options.max_size = 601;
     checkStack({reference, transformed(reference, first), transformed(reference, second)},
                {cv::Mat::eye(3, 3, CV_64F), first, second}, options, 0.50, 1.00,
                "SIFT downscaled three-frame homography");
-    checkComplementaryFocus(options.alignment, "SIFT complementary focus");
-    checkSixteenBitPrecision(options.alignment);
+    checkComplementaryFocus(options.method, "SIFT complementary focus");
+    checkSixteenBitPrecision(options.method);
 }
 
 /// ECC 从单位阵开始求解小幅透视变化，并检查缩小估计后的原图像素误差。
@@ -204,16 +268,16 @@ void testRegistrationEcc() {
     const cv::Mat reference = registrationTexture(769, 1051);
     const cv::Mat truth = (cv::Mat_<double>(3, 3) <<
         1.0018, 0.0014, 2.2, -0.0011, 0.9989, -1.4, 1.2e-6, -9e-7, 1.0);
-    mif::FusionOptions options;
-    options.alignment = mif::Alignment::EccHomography;
-    options.alignment_max_size = 501;
-    options.alignment_iterations = 300;
-    options.alignment_epsilon = 1e-7;
+    mif::RegistrationOptions options;
+    options.method = mif::Alignment::EccHomography;
+    options.max_size = 501;
+    options.iterations = 300;
+    options.epsilon = 1e-7;
     checkStack({reference, transformed(reference, truth)},
                {cv::Mat::eye(3, 3, CV_64F), truth}, options, 0.30, 0.70,
                "ECC downscaled homography");
-    checkComplementaryFocus(options.alignment, "ECC complementary focus");
-    checkSixteenBitPrecision(options.alignment);
+    checkComplementaryFocus(options.method, "ECC complementary focus");
+    checkSixteenBitPrecision(options.method);
 }
 
 /// 两条配准路径都应拒绝无信息输入；配置校验必须在禁用配准时仍然生效。
@@ -235,53 +299,135 @@ void testRegistrationFailure() {
     expectRegistrationFailure({reference, ramp}, mif::Alignment::FeatureHomography, 2);
 
     const cv::Mat small(17, 19, CV_8U, cv::Scalar(80));
-    auto rejects = [&](const mif::FusionOptions& options) {
-        require(options.alignment == mif::Alignment::None, "Invalid validation test fixture");
+    auto rejects = [&](const mif::RegistrationOptions& options) {
         try {
-            mif::fuse({small, small}, options);
+            mif::registerImages({small, small}, options);
         } catch (const std::invalid_argument&) {
             return;
         }
         throw std::runtime_error("Invalid registration options were accepted while alignment was disabled");
     };
     for (int value : {63, 100001}) {
-        mif::FusionOptions options;
-        options.alignment_max_features = value;
+        mif::RegistrationOptions options;
+        options.max_features = value;
         rejects(options);
     }
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const double infinity = std::numeric_limits<double>::infinity();
-    for (double value : {-0.1, 0.0, 1.0, nan, infinity}) {
-        mif::FusionOptions options;
-        options.alignment_match_ratio = value;
+    for (int value : {0, 10001}) {
+        mif::RegistrationOptions options;
+        options.iterations = value;
+        rejects(options);
+    }
+    for (int value : {15, 8193}) {
+        mif::RegistrationOptions options;
+        options.max_size = value;
         rejects(options);
     }
     for (double value : {-1.0, 0.0, nan, infinity}) {
-        mif::FusionOptions options;
-        options.alignment_ransac_threshold = value;
+        mif::RegistrationOptions options;
+        options.epsilon = value;
+        rejects(options);
+    }
+    for (double value : {-0.1, 0.0, 1.0, nan, infinity}) {
+        mif::RegistrationOptions options;
+        options.match_ratio = value;
+        rejects(options);
+    }
+    for (double value : {-1.0, 0.0, nan, infinity}) {
+        mif::RegistrationOptions options;
+        options.ransac_threshold = value;
         rejects(options);
     }
     for (double value : {-0.1, 0.0, 1.001, nan, infinity}) {
-        mif::FusionOptions options;
-        options.alignment_min_inlier_ratio = value;
+        mif::RegistrationOptions options;
+        options.min_inlier_ratio = value;
         rejects(options);
     }
     // 区间中包含的端点应可通过验证，避免把公开约定误写成严格不等式。
     for (int value : {64, 100000}) {
-        mif::FusionOptions options;
-        options.alignment_max_features = value;
-        options.alignment_min_inlier_ratio = 1.0;
-        const auto result = mif::fuse({small, small}, options);
-        require(result.image.size() == small.size(), "A valid registration option boundary was rejected");
+        mif::RegistrationOptions options;
+        options.max_features = value;
+        options.min_inlier_ratio = 1.0;
+        const auto result = mif::registerImages({small, small}, options);
+        require(result.images.size() == 2 && result.images.front().size() == small.size(),
+                "A valid registration option boundary was rejected");
     }
+    mif::RegistrationOptions unknown;
+    unknown.method = static_cast<mif::Alignment>(99);
+    rejects(unknown);
 
-    // 使用新增特征参数之前的完整聚合初始化顺序，末尾 true 必须仍对应保留权重。
-    // 新字段只能追加在旧字段之后，否则这类现有 C++ 调用可能静默改变含义。
-    const mif::FusionOptions legacy{
-        mif::FusionMethod::GuidedFilter, mif::FocusMeasure::ModifiedLaplacian, mif::Alignment::None,
-        9, 15, 3, 0.01, 0.0001, 5, 150, 1e-5, 1200, true};
-    require(legacy.keep_weight_maps && legacy.alignment_max_features == 4000,
-            "Legacy aggregate initialization changed parameter meanings");
-    require(mif::fuse({small, small}, legacy).weights.size() == 2,
-            "Legacy aggregate initialization no longer retains weight maps");
+    // 独立配准入口自身负责输入校验，调用者无需先调用融合函数来检查图像。
+    auto rejects_images = [](const std::vector<cv::Mat>& images) {
+        try {
+            mif::registerImages(images);
+        } catch (const std::invalid_argument&) {
+            return;
+        }
+        throw std::runtime_error("Standalone registration accepted invalid image input");
+    };
+    rejects_images({});
+    rejects_images({small});
+    rejects_images({small, cv::Mat()});
+    rejects_images({small, cv::Mat(18, 19, CV_8U)});
+    rejects_images({small, cv::Mat(small.size(), CV_16U)});
+    cv::Mat nonfinite(small.size(), CV_32F, cv::Scalar(nan));
+    rejects_images({nonfinite, nonfinite});
+
+    // None 返回独立的逐图副本，并保留非连续彩色 ROI 的类型与原始像素。
+    // 对重复引用同一输入的两帧，也不允许结果之间共享可写像素缓冲。
+    cv::Mat storage(35, 41, CV_16UC3, cv::Scalar(10001, 20002, 30003));
+    const cv::Mat roi = storage(cv::Rect(3, 4, 29, 23));
+    const cv::Mat snapshot = roi.clone();
+    int last = -1;
+    bool saw_alignment = false;
+    auto unchanged = mif::registerImages({roi, roi}, {}, [&](int percent, const std::string& stage) {
+        require(percent >= last && percent >= 0 && percent <= 100, "Registration progress is not monotonic");
+        if (last == -1) require(percent == 0, "Registration progress must start at zero");
+        last = percent;
+        if (stage == "align") saw_alignment = true;
+        return true;
+    });
+    require(last == 100 && !saw_alignment, "None registration reported an unexpected processing stage");
+    require(unchanged.crop == cv::Rect(0, 0, roi.cols, roi.rows), "None registration cropped the input");
+    checkCoverage(unchanged, {roi, roi});
+    require(unchanged.images[0].data != unchanged.images[1].data, "None outputs share writable image data");
+    unchanged.images[0].setTo(cv::Scalar::all(0));
+    require(cv::norm(roi, snapshot, cv::NORM_INF) == 0 &&
+            cv::norm(unchanged.images[1], snapshot, cv::NORM_INF) == 0,
+            "Modifying a registered image changed its source or another result");
+
+    // 配准自己的进度必须从零到完成保持单调，取消不能被重包装为普通求解失败。
+    mif::RegistrationOptions ecc;
+    ecc.method = mif::Alignment::Translation;
+    last = -1;
+    mif::registerImages({reference, reference}, ecc, [&](int percent, const std::string&) {
+        require(percent >= last && percent >= 0 && percent <= 100, "ECC progress is not monotonic");
+        if (last == -1) require(percent == 0, "ECC progress must start at zero");
+        last = percent;
+        return true;
+    });
+    require(last == 100, "Standalone registration never reached completion");
+    for (const std::string stage_to_cancel : {std::string("prepare"), std::string("align")}) {
+        bool cancelled = false;
+        try {
+            mif::registerImages({reference, reference}, ecc,
+                [&](int, const std::string& stage) { return stage != stage_to_cancel; });
+        } catch (const mif::Cancelled&) {
+            cancelled = true;
+        }
+        require(cancelled, "Standalone registration ignored cancellation or changed its exception type");
+    }
+    struct CallbackFailure : std::logic_error { using std::logic_error::logic_error; };
+    bool callback_preserved = false;
+    try {
+        mif::registerImages({reference, reference}, ecc, [](int, const std::string& stage) {
+            if (stage == "align") throw CallbackFailure("callback probe");
+            return true;
+        });
+    } catch (const CallbackFailure&) {
+        callback_preserved = true;
+    }
+    require(callback_preserved, "Registration replaced the caller's progress exception");
+
 }

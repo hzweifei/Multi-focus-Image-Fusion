@@ -18,7 +18,7 @@ outputs/
 │   │   ├── README.md
 │   │   └── licenses/
 │   ├── sdk/
-│   │   ├── include/mif/      fusion.hpp、options.hpp、export.hpp
+│   │   ├── include/mif/      融合、配准、组合流程及参数和进度的公开头文件
 │   │   ├── lib/              mif_core.lib（DLL 导入库）
 │   │   │   └── cmake/Mif/    外部 CMake 项目的接入配置
 │   │   ├── bin/              mif_core.dll、OpenCV 运行依赖
@@ -75,10 +75,19 @@ python -c "import mif; print(mif.__version__)"
 DLL 目录，通常不需要设置 OpenCV PATH。wheel 中也包含这些运行库，可以把匹配
 版本的 `.whl` 交给他人安装。
 
+包提供纯融合 `fuse()` / `fuse_detailed()`、独立配准 `register_images()`，以及
+组合入口 `register_and_fuse()`。配准和融合分别使用 `RegistrationOptions` 与
+`FusionOptions`；组合入口返回含 `image`、`focus_indices`、`weights`、`crop`、`transforms`
+的平坦字典。调用示例见 [项目说明](../README.md#使用)。
+
 ## C++ 使用
 
 把完整 `sdk/` 目录交给使用者，接入方式见 [SDK 说明](sdk.md)。调用者仍需相同
 版本 OpenCV 的开发包，因为公开接口包含 `cv::Mat`；运行库已收集在 SDK 的 `bin/`。
+公开入口分别位于 `fusion.hpp`、`registration.hpp`、`pipeline.hpp`；参数位于
+`fusion_options.hpp` 和 `registration_options.hpp`，共用回调位于 `progress.hpp`，
+另安装 CMake 生成的 `export.hpp`。旧 `options.hpp` 已移除，更新后需按
+[接口迁移](sdk.md#接口迁移) 调整调用方并重新编译。
 
 Windows 运行依赖收集和 Qt 部署已实现。Linux/macOS 当前只安装本项目的库，
 第三方运行库仍由使用者环境提供，尚未验证其独立打包。Windows 目标机器需有
