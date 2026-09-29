@@ -24,7 +24,8 @@ outputs/          按配置整理的 Qt 程序、Python 包、C++ SDK 和示例
 
 // 配准和融合分别配置，也可分别调用。
 mif::RegistrationOptions registration;
-registration.method = mif::Alignment::FeatureHomography;
+registration.method = mif::RegistrationMethod::Ecc;
+registration.motion_model = mif::MotionModel::Affine;
 mif::FusionOptions fusion;
 fusion.method = mif::FusionMethod::GuidedFilter;
 
@@ -44,7 +45,7 @@ NaN/Inf。不自动缩放不同尺寸的输入，也不自动丢弃透明通道�
 
 - `registerImages()` 返回 **`RegistrationResult`**：`images` 是保留输入位深与通道数的
   配准图像，`crop` 是共同有效区域，`transforms` 是逐图变换矩阵。
-  图像使用独立缓冲，即使 `method = Alignment::None` 也返回输入的独立副本。
+  图像使用独立缓冲，即使 `method = RegistrationMethod::None` 也返回输入的独立副本。
 - `fuse()` 返回 **`FusionResult`**：`image` 保留传入图像的尺寸、位深与通道数；
   `focus_indices` 是主导细节权重来源的零起始 `int32` 索引；`weights` 仅在
   `keep_weight_maps` 开启时保留。这些诊断信息不能当作经过标定的物理深度图。
@@ -52,10 +53,14 @@ NaN/Inf。不自动缩放不同尺寸的输入，也不自动丢弃透明通道�
   `crop` 与 `transforms` 保存配准元数据；中间配准图像在函数返回时释放。
 
 `crop` 使用第一张原图的坐标。CV_32F 变换矩阵把参考原图坐标映射到各源图坐标，
-None/Translation/Affine 为 2×3，FeatureHomography/EccHomography 为 3×3。
+关闭配准及 ECC 的平移/仿射模型返回 2×3，SIFT 及 ECC 的单应性模型返回 3×3。
 将裁剪后的输出坐标映射到源图时，先加上 `crop` 偏移，再应用矩阵；单应性需除以齐次分母。
 
 `FusionOptions` 和 `RegistrationOptions` 各由对应入口独立校验，组合层不增加参数对象。
+`RegistrationOptions.method` 使用 `RegistrationMethod` 选择 None/Ecc/Sift，
+`motion_model` 使用 `MotionModel` 选择 Translation/Affine/Homography，默认 Translation。
+后者仅供 ECC 使用；SIFT 固定求解单应性，不受切换前保留的 ECC 模型影响。
+两个枚举始终校验合法性，包括当前方法未使用的模型字段。
 组合入口直接调用这两个公开函数，与显式两步一致；整数配准图像先恢复原位深，
 再进入融合。旧调用方式和像素舍入变化见 [接口迁移](sdk.md#接口迁移)。
 
@@ -95,16 +100,18 @@ OpenFocus 另有 DCT、DTCWT、GFG-FGF，当前项目尚未实现；接入时应
 一种估计方法一个实现文件，方法类留在各自文件内部。每次启用配准时创建一个 `Estimator`，
 缓存参考图或参考特征，依次估计其他图像到同一参考坐标系的关系。所有估计器接收
 工作分辨率的归一化灰度图，返回参考到源图的 3×3 CV_64F 矩阵；公共流程转换为
-原图坐标，仅对原始分辨率图像执行一次重采样。公开结果按配准模式返回 2×3 或 3×3 矩阵。
+原图坐标，仅对原始分辨率图像执行一次重采样。公开结果按算法及模型返回 2×3 或 3×3 矩阵。
 
 以后增加方法时：
 
 1. 在 `algorithms/src/registration/` 新增方法 `.cpp`，使用 `mif::detail::registration` 命名空间，实现 `Estimator::estimate()` 和创建函数。
 2. 在本目录的 `registration.hpp` 声明工厂，在 `registration.cpp` 的 `makeEstimator()` 中分派。
-3. 在 `registration_options.hpp` 追加 `Alignment` 枚举，更新 `registration/registration.cpp` 的入口校验，并在 `algorithms/CMakeLists.txt` 加入源文件。
+3. 在 `registration_options.hpp` 追加 `RegistrationMethod` 枚举，更新 `registration/registration.cpp` 的入口校验，并在 `algorithms/CMakeLists.txt` 加入源文件。
 4. 接入 Qt 的枚举数据、Python 绑定和相应测试；明确新方法的输出矩阵格式。
 
 新方法应只负责估计变换；复用共同区域裁剪和坐标处理，避免各实现的矩阵方向不一致。
+扩展 ECC 的变换模型时，在 `MotionModel`、模型校验及 `ecc.cpp` 的模型映射中添加支持，
+不新增配准算法项；同时检查公开矩阵格式约定。
 失败必须抛异常，不能静默返回单位矩阵。当前支持 ECC 与 SIFT 两类估计方法，
 先用 SIFT 初始化再用 ECC 优化的配准模式尚未实现。
 
@@ -117,9 +124,9 @@ Qt Designer 的 `main_window.ui` 定义主窗口外框；控件、信号和布�
 也会清空上一批次；取消选择不改变当前内容。同时拖入多个目录时仅替换一次。
 
 “处理设置”分为可滚动的“配准”和“融合”页，“开始融合”按钮固定在参数页外。
-配准页先选方法：关闭时隐藏参数；ECC 显示迭代上限和收敛阈值；SIFT 显示特征点上限、
+配准页先选关闭/ECC/SIFT：关闭时隐藏参数；ECC 再选择平移/仿射/单应性模型，显示迭代上限和收敛阈值；SIFT 显示特征点上限、
 匹配距离比、RANSAC 阈值和最低内点比。启用配准后均显示共用的“工作最长边”。
-切换方法保留已填写的值；“恢复默认参数”重置全部配准参数并保留当前方法，
+切换方法保留 ECC 模型和已填写的值；“恢复默认参数”重置数值参数并保留当前方法和模型，
 融合页通过“恢复融合默认值”恢复设置。参数控件忽略滚轮改值，由父滚动区处理页面滚动。
 
 `widgets/registration_settings.hpp/.cpp` 中的 `RegistrationSettings` 管理配准控件、

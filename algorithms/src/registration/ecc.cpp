@@ -24,13 +24,13 @@ cv::Mat prepare(const cv::Mat& gray, const char* role) {
     return smoothed;
 }
 
-/// 将公开的配准选项转换为 ECC 的运动模型；不允许把其他方法静默当成仿射处理。
-int motionType(Alignment alignment) {
-    switch (alignment) {
-    case Alignment::Translation: return cv::MOTION_TRANSLATION;
-    case Alignment::Affine: return cv::MOTION_AFFINE;
-    case Alignment::EccHomography: return cv::MOTION_HOMOGRAPHY;
-    default: throw std::invalid_argument("The ECC estimator requires an ECC alignment mode");
+/// 将公开运动模型转换为 OpenCV 的 ECC 约束，不把未知枚举静默当作某种模型。
+int motionType(MotionModel model) {
+    switch (model) {
+    case MotionModel::Translation: return cv::MOTION_TRANSLATION;
+    case MotionModel::Affine: return cv::MOTION_AFFINE;
+    case MotionModel::Homography: return cv::MOTION_HOMOGRAPHY;
+    default: throw std::invalid_argument("The ECC estimator requires a valid motion model");
     }
 }
 
@@ -39,7 +39,7 @@ int motionType(Alignment alignment) {
 class EccEstimator final : public Estimator {
 public:
     EccEstimator(const cv::Mat& reference_gray, const RegistrationOptions& options)
-        : motion_(motionType(options.method)),
+        : motion_(motionType(options.motion_model)),
           reference_(prepare(reference_gray, "reference")),
           criteria_(cv::TermCriteria::COUNT | cv::TermCriteria::EPS,
                     options.iterations, options.epsilon) {}

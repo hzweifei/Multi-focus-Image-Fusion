@@ -37,7 +37,8 @@ Windows 包和 wheel 包含核心库及 OpenCV DLL，导入时自动注册包内
 import mif
 
 registration_options = mif.RegistrationOptions()
-registration_options.method = mif.Alignment.TRANSLATION
+registration_options.method = mif.RegistrationMethod.ECC
+registration_options.motion_model = mif.MotionModel.TRANSLATION
 registered = mif.register_images(images, registration_options)
 
 fusion_options = mif.FusionOptions()
@@ -53,18 +54,47 @@ result = mif.register_and_fuse(images, registration_options, fusion_options)
 ```
 
 组合入口与上述显式两步使用相同的配准图，包括整数图像的重采样舍入。
-`RegistrationOptions.method` 默认为 `Alignment.NONE`；即使跳过配准，
+`RegistrationOptions.method` 默认为 `RegistrationMethod.NONE`；即使跳过配准，
 `register_images` 仍返回每张图的独立副本。配准结果保持原始位深，裁剪到共同
 有效矩形。矩阵方向为第一张原始图像到各源图像；详细坐标约定见
 `help(mif.register_images)`。
 
+## 配准算法与运动模型
+
+`method` 选择算法，`motion_model` 只选择 ECC 允许的几何变换。默认模型为
+`MotionModel.TRANSLATION`，三种合法模型都可以保存在参数对象中。
+
+| `method` | `motion_model` | 返回变换 |
+|---|---|---|
+| `RegistrationMethod.NONE` | 忽略合法模型值 | 2×3 单位变换 |
+| `RegistrationMethod.ECC` | `MotionModel.TRANSLATION` | 2×3 平移 |
+| `RegistrationMethod.ECC` | `MotionModel.AFFINE` | 2×3 仿射 |
+| `RegistrationMethod.ECC` | `MotionModel.HOMOGRAPHY` | 3×3 单应性 |
+| `RegistrationMethod.SIFT` | 忽略合法模型值，固定求解单应性 | 3×3 单应性 |
+
+例如，SIFT 配准只需设置 `registration_options.method = mif.RegistrationMethod.SIFT`。
+ECC 需要较好的初始对齐；SIFT 需要足够的可匹配纹理。七个数值参数保持不变：
+`iterations`、`epsilon` 供 ECC 使用，`max_features`、`match_ratio`、
+`ransac_threshold`、`min_inlier_ratio` 供 SIFT 使用，`max_size` 控制估计分辨率。
+配准入口仍校验所有配置；忽略合法模型值不代表接受非法模型枚举。
+
 ## 从旧接口迁移
 
-此次拆分明确移除旧混合参数，不提供属性转发：
+`Alignment` 及其旧成员已移除，不提供兼容别名。按下表拆成算法与模型：
+
+| 旧 `Alignment` 值 | `RegistrationOptions.method` | `RegistrationOptions.motion_model` |
+|---|---|---|
+| `NONE` | `RegistrationMethod.NONE` | 保持默认 |
+| `TRANSLATION` | `RegistrationMethod.ECC` | `MotionModel.TRANSLATION` |
+| `AFFINE` | `RegistrationMethod.ECC` | `MotionModel.AFFINE` |
+| `ECC_HOMOGRAPHY` | `RegistrationMethod.ECC` | `MotionModel.HOMOGRAPHY` |
+| `FEATURE_HOMOGRAPHY` | `RegistrationMethod.SIFT` | 保持默认，SIFT 固定单应性 |
+
+更早版本的配准与融合混合配置仍按以下方式迁移，不提供属性转发：
 
 | 旧用法 | 新用法 |
 |---|---|
-| `FusionOptions.alignment` | `RegistrationOptions.method` |
+| `FusionOptions.alignment` | 按上表设置 `RegistrationOptions.method` 与 `motion_model` |
 | `FusionOptions.alignment_iterations`、`alignment_epsilon` | `RegistrationOptions.iterations`、`epsilon` |
 | `FusionOptions.alignment_max_size`、`alignment_max_features` | `RegistrationOptions.max_size`、`max_features` |
 | `FusionOptions.alignment_match_ratio`、`alignment_ransac_threshold`、`alignment_min_inlier_ratio` | `RegistrationOptions.match_ratio`、`ransac_threshold`、`min_inlier_ratio` |
@@ -76,5 +106,7 @@ result = mif.register_and_fuse(images, registration_options, fusion_options)
 `ValueError`，无法求解的配准抛出 `RuntimeError`。
 
 `examples/python/fuse_images.py` 演示纯融合，`examples/python/register_images.py`
-演示单独配准并保存整组图像。
+演示单独配准并保存整组图像。命令行算法为 `--method none/ecc/sift`，默认 `ecc`；
+ECC 模型为 `--motion-model translation/affine/homography`，默认 `translation`。
+选择 `sift` 时固定求解单应性，`--motion-model` 不改变其行为。
 

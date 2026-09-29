@@ -76,12 +76,14 @@ void bindOptions(nb::module_& module) {
     nb::enum_<mif::FocusMeasure>(module, "FocusMeasure")
         .value("MODIFIED_LAPLACIAN", mif::FocusMeasure::ModifiedLaplacian)
         .value("TENENGRAD", mif::FocusMeasure::Tenengrad);
-    nb::enum_<mif::Alignment>(module, "Alignment")
-        .value("NONE", mif::Alignment::None)
-        .value("TRANSLATION", mif::Alignment::Translation)
-        .value("AFFINE", mif::Alignment::Affine)
-        .value("FEATURE_HOMOGRAPHY", mif::Alignment::FeatureHomography)
-        .value("ECC_HOMOGRAPHY", mif::Alignment::EccHomography);
+    nb::enum_<mif::RegistrationMethod>(module, "RegistrationMethod", "配准算法，与 ECC 的几何运动模型独立选择。")
+        .value("NONE", mif::RegistrationMethod::None)
+        .value("ECC", mif::RegistrationMethod::Ecc)
+        .value("SIFT", mif::RegistrationMethod::Sift);
+    nb::enum_<mif::MotionModel>(module, "MotionModel", "ECC 运动模型；SIFT 固定求解单应性，不使用此选择。")
+        .value("TRANSLATION", mif::MotionModel::Translation)
+        .value("AFFINE", mif::MotionModel::Affine)
+        .value("HOMOGRAPHY", mif::MotionModel::Homography);
 
     // 融合配置只包含融合所需字段；旧 alignment_* 属性不再转发或隐式生效。
     nb::class_<mif::FusionOptions>(module, "FusionOptions", "纯融合参数，不包含配准配置。")
@@ -97,7 +99,10 @@ void bindOptions(nb::module_& module) {
         .def_rw("keep_weight_maps", &mif::FusionOptions::keep_weight_maps);
     nb::class_<mif::RegistrationOptions>(module, "RegistrationOptions", "独立配准参数，以第一张输入为参考。")
         .def(nb::init<>())
-        .def_rw("method", &mif::RegistrationOptions::method)
+        .def_rw("method", &mif::RegistrationOptions::method,
+            "配准算法 NONE/ECC/SIFT，默认 NONE。")
+        .def_rw("motion_model", &mif::RegistrationOptions::motion_model,
+            "仅 ECC 使用的运动模型，默认 TRANSLATION；SIFT 固定使用单应性。")
         .def_rw("iterations", &mif::RegistrationOptions::iterations)
         .def_rw("epsilon", &mif::RegistrationOptions::epsilon)
         .def_rw("max_size", &mif::RegistrationOptions::max_size)

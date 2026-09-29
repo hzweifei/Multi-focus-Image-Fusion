@@ -23,13 +23,16 @@ float32 输入已经处于 `[0, 1]`。融合输出裁剪到 `[0, 1]` 后恢复�
 第一张图片为参考，其余图片直接向它配准；估计图像最长边不超过 `RegistrationOptions.max_size`。
 配准由 `registerImages()` 独立执行，返回图像列表、共同裁剪区域和变换矩阵。
 
-| 选项 | 方法与模型 | 返回矩阵 |
+| `method`（算法） | `motion_model`（ECC 变换模型） | 返回矩阵 |
 |---|---|---|
-| `None` | 返回输入的独立副本 | 2×3 单位变换 |
-| `Translation` | ECC 平移 | 2×3 |
-| `Affine` | ECC 仿射 | 2×3 |
-| `FeatureHomography` | SIFT + RANSAC 单应性 | 3×3 |
-| `EccHomography` | ECC 单应性 | 3×3 |
+| `None` | 不使用 | 2×3 单位变换，返回输入的独立副本 |
+| `Ecc` | `Translation`：水平、垂直位移 | 2×3 |
+| `Ecc` | `Affine`：平移、旋转、缩放、剪切 | 2×3 |
+| `Ecc` | `Homography`：包括透视变化 | 3×3 |
+| `Sift` | 不使用，SIFT + RANSAC 固定求解单应性 | 3×3 |
+
+ECC 的三个模型使用同一求解实现，仅允许的变换形式不同。`method` 默认 `None`，
+`motion_model` 默认 `Translation`；SIFT 不使用该字段，但接口仍校验枚举值是否合法。
 
 ### ECC
 
@@ -55,14 +58,15 @@ float32 输入已经处于 `[0, 1]`。融合输出裁剪到 `[0, 1]` 后恢复�
 避免边界填充值进入融合；公共矩形的短边至少为 8 像素。
 
 两种方法都不处理局部形变或明显视差，失败会报告图片序号，不静默假设“没有运动”。
-当前尚无 Homography + ECC 组合模式或配准金字塔。配准会重采样像素，保留位深
+当前尚无先用 SIFT 初始化、再用 ECC 优化的配准模式，也未实现配准金字塔。配准会重采样像素，保留位深
 不表示像素值不发生变化。方法选择示例：
 
 ```cpp
 #include <mif/registration.hpp>
 
 mif::RegistrationOptions options;
-options.method = mif::Alignment::FeatureHomography; // 或 EccHomography
+options.method = mif::RegistrationMethod::Ecc;
+options.motion_model = mif::MotionModel::Homography;
 auto registered = mif::registerImages(images, options);
 // registered.images 保留原位深，可保存、检查或交给 mif::fuse()。
 ```
@@ -71,7 +75,8 @@ auto registered = mif::registerImages(images, options);
 import mif
 
 options = mif.RegistrationOptions()
-options.method = mif.Alignment.FEATURE_HOMOGRAPHY  # 或 ECC_HOMOGRAPHY
+options.method = mif.RegistrationMethod.ECC
+options.motion_model = mif.MotionModel.HOMOGRAPHY
 registered = mif.register_images(images, options)
 result = mif.fuse(registered["images"])
 ```
@@ -146,7 +151,8 @@ w = mean(a)*I + mean(b)
 
 | 参数 | 默认值 | 范围与含义 |
 |---|---|---|
-| `method` | `None` | 上述五种配准模式之一 |
+| `method` | `None` | `RegistrationMethod::None`、`Ecc` 或 `Sift` |
+| `motion_model` | `Translation` | `MotionModel::Translation`、`Affine` 或 `Homography`；仅 ECC 使用 |
 | `iterations` | 150 | `[1, 10000]`，ECC 最大迭代次数 |
 | `epsilon` | 1e-5 | 有限正数，ECC 收敛阈值 |
 | `max_size` | 1200 | `[16, 8192]`，工作图像最长边上限，不放大小图；开启配准时工作图短边至少为 16 |
@@ -157,7 +163,7 @@ w = mean(a)*I + mean(b)
 
 每个入口检查自己参数对象的所有字段，包括所选方法当前未使用的字段；
 纯融合不会检查或执行配准。上述枚举使用 C++ 写法，Python 对应成员名为全大写，
-例如 `FusionMethod.GUIDED_FILTER`、`Alignment.FEATURE_HOMOGRAPHY`。
+例如 `FusionMethod.GUIDED_FILTER`、`RegistrationMethod.ECC`、`MotionModel.HOMOGRAPHY`。
 旧参数名的替换见 [接口迁移](sdk.md#接口迁移)。
 
 ## 实际限制

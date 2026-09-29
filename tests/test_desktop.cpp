@@ -48,7 +48,8 @@ void flushLayout() {
 // 控件值和最终算法输出分别验证，避免只检查界面显示而遗漏任务参数快照。
 struct RegistrationControls {
     mif::desktop::RegistrationSettings* settings;
-    QComboBox* mode;
+    QComboBox* method;
+    QComboBox* motion_model;
     QSpinBox* max_size;
     QSpinBox* iterations;
     QDoubleSpinBox* epsilon;
@@ -60,7 +61,8 @@ struct RegistrationControls {
 
     explicit RegistrationControls(mif::desktop::MainWindow& window)
         : settings(dynamic_cast<mif::desktop::RegistrationSettings*>(window.findChild<QGroupBox*>("registrationSettings"))),
-          mode(window.findChild<QComboBox*>("alignmentMode")),
+          method(window.findChild<QComboBox*>("registrationMethod")),
+          motion_model(window.findChild<QComboBox*>("registrationMotionModel")),
           max_size(window.findChild<QSpinBox*>("registrationMaxSize")),
           iterations(window.findChild<QSpinBox*>("registrationIterations")),
           epsilon(window.findChild<QDoubleSpinBox*>("registrationEpsilon")),
@@ -69,19 +71,27 @@ struct RegistrationControls {
           ransac_threshold(window.findChild<QDoubleSpinBox*>("registrationRansacThreshold")),
           min_inlier_ratio(window.findChild<QDoubleSpinBox*>("registrationMinInlierRatio")),
           reset(window.findChild<QPushButton*>("resetRegistrationOptions")) {
-        require(settings && mode && max_size && iterations && epsilon && max_features &&
+        require(settings && method && motion_model && max_size && iterations && epsilon && max_features &&
                 match_ratio && ransac_threshold && min_inlier_ratio && reset,
                 "Registration parameter controls are missing");
     }
 
-    void select(mif::Alignment method) const {
-        const int index = mode->findData(static_cast<int>(method));
-        require(index >= 0, "Registration mode item data is missing");
-        mode->setCurrentIndex(index);
+    void selectMethod(mif::RegistrationMethod value) const {
+        const int index = method->findData(static_cast<int>(value));
+        require(index >= 0, "Registration method item data is missing");
+        method->setCurrentIndex(index);
+        flushLayout();
+    }
+
+    void selectMotionModel(mif::MotionModel value) const {
+        const int index = motion_model->findData(static_cast<int>(value));
+        require(index >= 0, "Motion model item data is missing");
+        motion_model->setCurrentIndex(index);
         flushLayout();
     }
 
     void setValues(const mif::RegistrationOptions& options) const {
+        selectMotionModel(options.motion_model);
         max_size->setValue(options.max_size);
         iterations->setValue(options.iterations);
         epsilon->setValue(options.epsilon);
@@ -94,13 +104,16 @@ struct RegistrationControls {
     void requireValues(const mif::RegistrationOptions& expected) const {
         const auto actual = settings->options();
         auto close = [](double a, double b) { return std::abs(a - b) < 1e-12; };
-        require(actual.method == expected.method && actual.max_size == expected.max_size &&
+        require(actual.method == expected.method && actual.motion_model == expected.motion_model &&
+                actual.max_size == expected.max_size &&
                 actual.iterations == expected.iterations && close(actual.epsilon, expected.epsilon) &&
                 actual.max_features == expected.max_features && close(actual.match_ratio, expected.match_ratio) &&
                 close(actual.ransac_threshold, expected.ransac_threshold) &&
                 close(actual.min_inlier_ratio, expected.min_inlier_ratio),
                 "Registration options do not match the edited controls");
-        require(max_size->value() == expected.max_size && iterations->value() == expected.iterations &&
+        require(method->currentData().toInt() == static_cast<int>(expected.method) &&
+                motion_model->currentData().toInt() == static_cast<int>(expected.motion_model) &&
+                max_size->value() == expected.max_size && iterations->value() == expected.iterations &&
                 close(epsilon->value(), expected.epsilon) && max_features->value() == expected.max_features &&
                 close(match_ratio->value(), expected.match_ratio) &&
                 close(ransac_threshold->value(), expected.ransac_threshold) &&
@@ -108,11 +121,12 @@ struct RegistrationControls {
                 "Registration controls lost their selected values");
     }
 
-    void requireVisibility(mif::Alignment method) const {
-        const bool sift = method == mif::Alignment::FeatureHomography;
-        const bool active = method != mif::Alignment::None;
-        const bool ecc = active && !sift;
-        require(max_size->isVisibleTo(settings) == active && iterations->isVisibleTo(settings) == ecc &&
+    void requireVisibility(mif::RegistrationMethod value) const {
+        const bool sift = value == mif::RegistrationMethod::Sift;
+        const bool active = value != mif::RegistrationMethod::None;
+        const bool ecc = value == mif::RegistrationMethod::Ecc;
+        require(motion_model->isVisibleTo(settings) == ecc && max_size->isVisibleTo(settings) == active &&
+                iterations->isVisibleTo(settings) == ecc &&
                 epsilon->isVisibleTo(settings) == ecc && max_features->isVisibleTo(settings) == sift &&
                 match_ratio->isVisibleTo(settings) == sift && ransac_threshold->isVisibleTo(settings) == sift &&
                 min_inlier_ratio->isVisibleTo(settings) == sift,
@@ -121,9 +135,10 @@ struct RegistrationControls {
 };
 
 // 所有字段都偏离默认值，最长边还会触发缩小，真实计算可发现主窗口漏传参数。
-mif::RegistrationOptions customRegistrationOptions(mif::Alignment method) {
+mif::RegistrationOptions customRegistrationOptions(mif::RegistrationMethod method, mif::MotionModel model) {
     mif::RegistrationOptions options;
     options.method = method;
+    options.motion_model = model;
     options.max_size = 256;
     options.iterations = 90;
     options.epsilon = 0.00002;
@@ -327,6 +342,16 @@ void verifyRegistrationSettings() {
     tabs->setCurrentIndex(0);
     flushLayout();
     controls.requireValues(mif::RegistrationOptions{});
+    require(controls.method->count() == 3 && controls.motion_model->count() == 3,
+            "Registration methods and motion models need separate three-item selectors");
+    for (const auto method : {mif::RegistrationMethod::None, mif::RegistrationMethod::Ecc,
+                              mif::RegistrationMethod::Sift})
+        require(controls.method->findData(static_cast<int>(method)) >= 0,
+                "Registration method item data is missing");
+    for (const auto model : {mif::MotionModel::Translation, mif::MotionModel::Affine,
+                             mif::MotionModel::Homography})
+        require(controls.motion_model->findData(static_cast<int>(model)) >= 0,
+                "Motion model item data is missing");
     require(controls.max_size->minimum() == 16 && controls.max_size->maximum() == 8192 &&
             controls.iterations->minimum() == 1 && controls.iterations->maximum() == 10000 &&
             controls.max_features->minimum() == 64 && controls.max_features->maximum() == 100000,
@@ -343,48 +368,62 @@ void verifyRegistrationSettings() {
     require(std::abs(controls.epsilon->singleStep() - 1e-5) < 1e-12,
             "ECC epsilon control has an incorrect step");
 
-    auto edited = customRegistrationOptions(mif::Alignment::None);
+    auto edited = customRegistrationOptions(mif::RegistrationMethod::None, mif::MotionModel::Translation);
     controls.setValues(edited);
-    for (const auto mode : {mif::Alignment::None, mif::Alignment::Translation, mif::Alignment::Affine,
-                           mif::Alignment::FeatureHomography, mif::Alignment::EccHomography}) {
-        controls.select(mode);
-        edited.method = mode;
-        controls.requireVisibility(mode);
-        controls.requireValues(edited);
-        // 把滚轮发送给具有键盘焦点的真实控件，数值和方法都应保持不变。
-        // 参数设定和方法切换另行检查，这里只验证滚动页面时不会误改配置。
-        for (QWidget* widget : std::vector<QWidget*>{controls.mode, controls.max_size, controls.iterations,
-                controls.epsilon, controls.max_features, controls.match_ratio,
-                controls.ransac_threshold, controls.min_inlier_ratio}) {
-            if (!widget->isVisibleTo(controls.settings)) continue;
-            widget->setFocus();
-            const QPoint point = widget->rect().center();
-            QWheelEvent event(QPointF(point), QPointF(widget->mapToGlobal(point)), QPoint(), QPoint(0, 120),
-                              Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
-            QApplication::sendEvent(widget, &event);
+    // 三种模型分别经历 ECC → SIFT → 关闭 → ECC，隐藏期间仍需保留所选模型与数值。
+    for (const auto model : {mif::MotionModel::Translation, mif::MotionModel::Affine,
+                             mif::MotionModel::Homography}) {
+        controls.selectMethod(mif::RegistrationMethod::Ecc);
+        controls.selectMotionModel(model);
+        edited.motion_model = model;
+        for (const auto method : {mif::RegistrationMethod::Ecc, mif::RegistrationMethod::Sift,
+                                  mif::RegistrationMethod::None, mif::RegistrationMethod::Ecc}) {
+            controls.selectMethod(method);
+            edited.method = method;
+            controls.requireVisibility(method);
+            controls.requireValues(edited);
+            // 将滚轮发送给有键盘焦点的真实控件，算法、模型和数值均不能误改。
+            for (QWidget* widget : std::vector<QWidget*>{controls.method, controls.motion_model,
+                    controls.max_size, controls.iterations, controls.epsilon, controls.max_features,
+                    controls.match_ratio, controls.ransac_threshold, controls.min_inlier_ratio}) {
+                if (!widget->isVisibleTo(controls.settings)) continue;
+                widget->setFocus();
+                const QPoint point = widget->rect().center();
+                QWheelEvent event(QPointF(point), QPointF(widget->mapToGlobal(point)), QPoint(), QPoint(0, 120),
+                                  Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+                QApplication::sendEvent(widget, &event);
+                controls.requireValues(edited);
+            }
+            // 标签页切换不能重建参数控件或丢弃隐藏算法的配置。
+            tabs->setCurrentIndex(1);
+            flushLayout();
+            require(fusion->isVisibleTo(&window), "Fusion page did not become visible");
+            tabs->setCurrentIndex(0);
+            flushLayout();
             controls.requireValues(edited);
         }
-        // 标签页切换不能重建参数控件或丢弃隐藏方法的配置。
-        tabs->setCurrentIndex(1);
-        flushLayout();
-        require(fusion->isVisibleTo(&window), "Fusion page did not become visible");
-        tabs->setCurrentIndex(0);
-        flushLayout();
-        controls.requireValues(edited);
     }
 
-    // 恢复默认同时覆盖隐藏字段，但保留当前方法；再次切回 ECC 验证隐藏值也恢复。
-    controls.select(mif::Alignment::FeatureHomography);
-    controls.reset->click();
-    mif::RegistrationOptions defaults;
-    defaults.method = mif::Alignment::FeatureHomography;
-    controls.requireValues(defaults);
-    controls.select(mif::Alignment::Translation);
-    defaults.method = mif::Alignment::Translation;
-    controls.requireValues(defaults);
+    // 所有算法下恢复默认都覆盖隐藏数值，但保留算法及模型；切回 ECC 时模型仍可见。
+    for (const auto method : {mif::RegistrationMethod::Ecc, mif::RegistrationMethod::Sift,
+                              mif::RegistrationMethod::None}) {
+        controls.selectMethod(method);
+        edited = customRegistrationOptions(method, mif::MotionModel::Homography);
+        controls.setValues(edited);
+        controls.reset->click();
+        mif::RegistrationOptions defaults;
+        defaults.method = method;
+        defaults.motion_model = mif::MotionModel::Homography;
+        controls.requireValues(defaults);
+        controls.requireVisibility(method);
+        controls.selectMethod(mif::RegistrationMethod::Ecc);
+        defaults.method = mif::RegistrationMethod::Ecc;
+        controls.requireValues(defaults);
+        controls.requireVisibility(defaults.method);
+    }
 
     // 压缩可用高度产生真实滚动范围；不依赖字体和平台对应的精确像素尺寸。
-    controls.select(mif::Alignment::FeatureHomography);
+    controls.selectMethod(mif::RegistrationMethod::Sift);
     window.resize(window.minimumSize());
     tabs->setMaximumHeight(160);
     flushLayout();
@@ -399,60 +438,70 @@ void verifyRegistrationSettings() {
             "Run button is clipped or hidden in the small window");
 }
 
-// 将选项挪到与枚举值不同的位置后真实执行，能发现误用 currentIndex 的传参回归。
-void verifyHomographySelection(const QStringList& paths, const std::vector<cv::Mat>& images) {
-    for (const auto mode : {mif::Alignment::FeatureHomography, mif::Alignment::EccHomography}) {
-        mif::desktop::MainWindow window;
-        window.addPaths(paths);
-        RegistrationControls controls(window);
-        auto* selector = window.findChild<QComboBox*>("alignmentMode");
-        require(selector != nullptr && selector->count() == 5, "Alignment modes are missing from the desktop UI");
-        auto* registration_settings = window.findChild<QGroupBox*>("registrationSettings");
-        auto* fusion_settings = window.findChild<QGroupBox*>("fusionSettings");
-        require(registration_settings && fusion_settings && registration_settings != fusion_settings,
-                "Registration and fusion settings must have separate groups");
+// 将算法和模型都挪到与枚举值不同的位置后真实执行，发现误用 currentIndex 的回归。
+void verifyRegistrationSelection(const QStringList& paths, const std::vector<cv::Mat>& images,
+                                 mif::RegistrationMethod method, mif::MotionModel model) {
+    mif::desktop::MainWindow window;
+    window.addPaths(paths);
+    // 主窗口会自然排序文件；核心对照必须使用同一顺序，第一张始终是配准参考。
+    auto* files = window.findChild<QListWidget*>("imageList");
+    require(files && files->count() == paths.size() && images.size() == static_cast<std::size_t>(paths.size()),
+            "Registration fixture paths and core images must have matching counts");
+    for (int i = 0; i < paths.size(); ++i)
+        require(files->item(i)->data(Qt::UserRole).toString() == QFileInfo(paths[i]).absoluteFilePath(),
+                "Registration fixture order differs from desktop import order: expected " + paths[i].toStdString() +
+                ", imported " + files->item(i)->data(Qt::UserRole).toString().toStdString());
+    RegistrationControls controls(window);
+    auto* registration_settings = window.findChild<QGroupBox*>("registrationSettings");
+    auto* fusion_settings = window.findChild<QGroupBox*>("fusionSettings");
+    require(registration_settings && fusion_settings && registration_settings != fusion_settings,
+            "Registration and fusion settings must have separate groups");
+    for (auto* selector : {controls.method, controls.motion_model})
         require(registration_settings->isAncestorOf(selector) && !fusion_settings->isAncestorOf(selector),
-                "Registration selector is still part of the fusion settings");
-        for (const auto existing : {mif::Alignment::None, mif::Alignment::Translation, mif::Alignment::Affine,
-                mif::Alignment::FeatureHomography, mif::Alignment::EccHomography})
-            require(selector->findData(static_cast<int>(existing)) >= 0, "Alignment item data is missing");
-        const int index = selector->findData(static_cast<int>(mode));
+                "Registration selectors must belong to the registration settings");
+    auto moveToFirst = [](QComboBox* selector, int data) {
+        const int index = selector->findData(data);
+        require(index > 0, "Registration fixture must move the selected item away from its enum position");
         const auto label = selector->itemText(index);
         const auto value = selector->itemData(index);
         selector->removeItem(index);
         selector->insertItem(0, label, value);
         selector->setCurrentIndex(0);
-        require(selector->currentData().toInt() == static_cast<int>(mode), "Alignment mode selection failed");
+        require(selector->currentData().toInt() == data, "Reordered registration selection failed");
+    };
+    moveToFirst(controls.method, static_cast<int>(method));
+    moveToFirst(controls.motion_model, static_cast<int>(model));
 
-        // 自定义全部参数，并在工作分辨率缩小后与相同配置的公开组合入口比较。
-        const auto registration_options = customRegistrationOptions(mode);
-        controls.setValues(registration_options);
-        controls.requireValues(registration_options);
-        const mif::FusionOptions fusion_options;
-        const auto expected = mif::registerAndFuse(images, registration_options, fusion_options);
-        require(expected.fusion.image.size() != images.front().size(), "Alignment fixture must crop its perspective borders");
-        runFusion(window, [&] {
-            require(!registration_settings->isEnabled() && !fusion_settings->isEnabled(),
-                    "Both parameter groups must be locked while the pipeline runs");
-            require(!controls.mode->isEnabled() && !controls.reset->isEnabled() &&
-                    !controls.max_size->isEnabled() && !controls.iterations->isEnabled() &&
-                    !controls.epsilon->isEnabled() && !controls.max_features->isEnabled() &&
-                    !controls.match_ratio->isEnabled() && !controls.ransac_threshold->isEnabled() &&
-                    !controls.min_inlier_ratio->isEnabled(),
-                    "Registration fields or reset button remained editable during processing");
-        });
-        require(registration_settings->isEnabled() && fusion_settings->isEnabled(),
-                "Both parameter groups must be unlocked when the pipeline finishes");
-        require(controls.mode->isEnabled() && controls.reset->isEnabled() && controls.max_size->isEnabled() &&
-                controls.iterations->isEnabled() && controls.epsilon->isEnabled() &&
-                controls.max_features->isEnabled() && controls.match_ratio->isEnabled() &&
-                controls.ransac_threshold->isEnabled() && controls.min_inlier_ratio->isEnabled(),
-                "Registration fields did not unlock after processing");
-        controls.requireValues(registration_options);
-        // 选项重排后仍应使用其 RegistrationOptions.method，不能误选“关闭配准”。
-        require(window.resultImage().size() == expected.fusion.image.size(), "Desktop passed the wrong registration method");
-        require(mae(window.resultImage(), expected.fusion.image) < 0.1, "Desktop registration differs from the selected pipeline mode");
-    }
+    // 非默认参数与缩小工作图同时生效；ECC 仿射/单应性和 SIFT 分别与核心入口对照。
+    // SIFT 接收并保留合法模型字段，但算法自身固定单应性，不使用这个 ECC 专属选择。
+    const auto registration_options = customRegistrationOptions(method, model);
+    controls.setValues(registration_options);
+    controls.requireValues(registration_options);
+    const mif::FusionOptions fusion_options;
+    const auto expected = mif::registerAndFuse(images, registration_options, fusion_options);
+    require(expected.fusion.image.size() != images.front().size(), "Registration fixture must crop transformed borders");
+    runFusion(window, [&] {
+        require(!registration_settings->isEnabled() && !fusion_settings->isEnabled(),
+                "Both parameter groups must be locked while the pipeline runs");
+        require(!controls.method->isEnabled() && !controls.motion_model->isEnabled() &&
+                !controls.reset->isEnabled() && !controls.max_size->isEnabled() && !controls.iterations->isEnabled() &&
+                !controls.epsilon->isEnabled() && !controls.max_features->isEnabled() &&
+                !controls.match_ratio->isEnabled() && !controls.ransac_threshold->isEnabled() &&
+                !controls.min_inlier_ratio->isEnabled(),
+                "Registration algorithm, model or parameters remained editable during processing");
+    });
+    require(registration_settings->isEnabled() && fusion_settings->isEnabled(),
+            "Both parameter groups must be unlocked when the pipeline finishes");
+    require(controls.method->isEnabled() && controls.motion_model->isEnabled() && controls.reset->isEnabled() &&
+            controls.max_size->isEnabled() && controls.iterations->isEnabled() && controls.epsilon->isEnabled() &&
+            controls.max_features->isEnabled() && controls.match_ratio->isEnabled() &&
+            controls.ransac_threshold->isEnabled() && controls.min_inlier_ratio->isEnabled(),
+            "Registration fields did not unlock after processing");
+    controls.requireValues(registration_options);
+    require(window.resultImage().size() == expected.fusion.image.size(),
+            "Desktop passed the wrong registration algorithm or motion model");
+    require(mae(window.resultImage(), expected.fusion.image) < 0.1,
+            "Desktop registration differs from the selected algorithm and motion model");
 }
 } // 匿名命名空间
 
@@ -497,7 +546,7 @@ int main(int argc, char** argv) {
         const auto saved = temporary.filePath(QStringLiteral("融合结果.png"));
         mif::desktop::writeImage(saved, window.resultImage());
         require(cv::norm(window.resultImage(), mif::desktop::readImage(saved), cv::NORM_INF) == 0, "Result export differs");
-        // 固定随机纹理、文字与图形提供稳定的特征；轻微透视变形适合两种单应性方法。
+        // 固定随机纹理与图形提供稳定特征；同一轻微透视变形分别验证 SIFT 和 ECC 单应性。
         auto reference = texture(240, 320);
         cv::circle(reference, {60, 60}, 18, cv::Scalar(245), 3);
         cv::rectangle(reference, {205, 140, 65, 40}, cv::Scalar(25), 3);
@@ -509,7 +558,23 @@ int main(int argc, char** argv) {
         const auto alignmentSecond = temporary.filePath(QStringLiteral("配准_02.png"));
         mif::desktop::writeImage(alignmentFirst, reference);
         mif::desktop::writeImage(alignmentSecond, shifted);
-        verifyHomographySelection({alignmentFirst, alignmentSecond}, {reference, shifted});
+        verifyRegistrationSelection({alignmentFirst, alignmentSecond}, {reference, shifted},
+                                    mif::RegistrationMethod::Sift, mif::MotionModel::Affine);
+        verifyRegistrationSelection({alignmentFirst, alignmentSecond}, {reference, shifted},
+                                    mif::RegistrationMethod::Ecc, mif::MotionModel::Homography);
+        // 独立仿射样本包含小幅旋转和缩放，确保遗漏 motion_model 时默认平移无法冒充。
+        cv::Mat affine = cv::getRotationMatrix2D(cv::Point2f(160.f, 120.f), 1.2, 1.015);
+        affine.at<double>(0, 2) += 3.0;
+        affine.at<double>(1, 2) += 2.0;
+        cv::Mat affine_shifted;
+        cv::warpAffine(reference, affine_shifted, affine, reference.size(), cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
+        // 使用同一前缀保证自然排序后仍以 reference 为首张，与核心对照的输入顺序一致。
+        const auto affineFirst = temporary.filePath(QStringLiteral("仿射_01.png"));
+        const auto affineSecond = temporary.filePath(QStringLiteral("仿射_02.png"));
+        mif::desktop::writeImage(affineFirst, reference);
+        mif::desktop::writeImage(affineSecond, affine_shifted);
+        verifyRegistrationSelection({affineFirst, affineSecond}, {reference, affine_shifted},
+                                    mif::RegistrationMethod::Ecc, mif::MotionModel::Affine);
         verifyRegistrationSettings();
         verifyFolderBatchImport();
         // 可选截图使用同一个已有结果的主窗口，依次检查默认、ECC、SIFT、融合和小窗口。
@@ -531,11 +596,12 @@ int main(int argc, char** argv) {
                 require(window.grab().save(path), "Screenshot save failed: " + path.toStdString());
             };
             tabs->setCurrentIndex(0);
-            controls.select(mif::Alignment::None);
+            controls.selectMethod(mif::RegistrationMethod::None);
             capture({});
-            controls.select(mif::Alignment::Translation);
+            controls.selectMethod(mif::RegistrationMethod::Ecc);
+            controls.selectMotionModel(mif::MotionModel::Affine);
             capture("_ecc");
-            controls.select(mif::Alignment::FeatureHomography);
+            controls.selectMethod(mif::RegistrationMethod::Sift);
             capture("_sift");
             tabs->setCurrentIndex(1);
             capture("_fusion");

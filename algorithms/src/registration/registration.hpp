@@ -17,7 +17,7 @@ public:
     virtual cv::Mat estimate(const cv::Mat& source_gray) = 0;
 };
 
-/// ECC 灰度优化，模型由 Translation / Affine / EccHomography 决定。
+/// ECC 灰度优化，同一估计方法通过 motion_model 选择平移、仿射或单应性约束。
 std::unique_ptr<Estimator> makeEccEstimator(const cv::Mat& reference_gray, const RegistrationOptions& options);
 /// SIFT + 描述子匹配 + RANSAC 单应性估计，参考特征仅提取一次。
 std::unique_ptr<Estimator> makeHomographyEstimator(const cv::Mat& reference_gray, const RegistrationOptions& options);

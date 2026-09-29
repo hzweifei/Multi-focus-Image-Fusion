@@ -149,3 +149,26 @@ Qt 6、Linux 和 macOS 暂未实际编译验证。
 - 使用交付 DLL 和 Windows 平台插件，在创建主窗口前加载真实样式运行完整桌面工作流。
   已检查关闭配准、ECC、SIFT、融合页和 940×670 小窗口五种截图：
   `outputs/registration-settings.png` 及同名的 `_ecc`、`_sift`、`_fusion`、`_small` 版本。
+
+## 配准算法与变换模型分离验证（2026-09-29）
+
+`RegistrationMethod` 只表示关闭、ECC 或 SIFT；ECC 的平移、仿射、单应性由
+独立的 `MotionModel` 选择，三个模型共用一个 ECC 实现文件。C++、Qt 和 Python
+使用相同约定，旧枚举的替换方式见 [SDK 接口迁移](sdk.md#配准算法与模型)。
+
+- Release 完整构建通过，15 项 CTest 全部通过；`outputs/Release/` 中的 Qt 程序、
+  Python 包、SDK 头文件与库已更新。
+- 与拆分前保存的结果比较，30 组独立配准与 60 组组合流程的 270 个数组逐元素一致。
+  覆盖关闭配准、ECC 三种模型、SIFT、两种融合方法、三种位深、灰度/BGR 和缩小工作图。
+  比较脚本与基线保存在本地 `build/check_method_model.py`、`build/method-model-baseline.npz`。
+- 验证方法与模型枚举的默认值和非法值；SIFT 忽略合法模型值，始终返回 3×3 变换，
+  关闭配准始终返回 2×3 单位变换。组合入口与显式两步在全部配准路径上结果一致。
+- Qt 覆盖两个下拉框条目重排后的实际传参，使用仿射旋转缩放和轻微透视样本与核心结果
+  对照；验证模型显隐、切换保留、恢复默认只重置数值，以及运行时禁用模型和其他参数。
+- wheel 已重新构建，安装到 `build/method-model-wheel-smoke/` 后，清除开发依赖 PATH
+  且不设置额外 DLL 路径，15 项 Python 测试全部通过。
+- 外部 SDK 工程使用交付目录的头文件、导入库和运行库编译、链接、运行成功，实际调用
+  ECC 的三个模型，检查新参数布局跨 DLL 传递及输出矩阵格式。
+- 使用交付运行库和 Windows 平台插件运行桌面流程通过；已检查 ECC 模型选择、SIFT
+  参数页和小窗口布局。截图保存在 `outputs/method-model-settings.png` 及同名的
+  `_ecc`、`_sift`、`_fusion`、`_small` 版本。

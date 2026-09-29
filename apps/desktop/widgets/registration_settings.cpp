@@ -1,6 +1,5 @@
 #include "registration_settings.hpp"
 
-#include <QAbstractSpinBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFontMetrics>
@@ -40,7 +39,7 @@ QFormLayout* createParameterForm(QWidget* parent) {
 }
 
 /// 标签与字段共用说明；标签宽度按当前字体计算，使不同参数组的输入框对齐。
-void addParameter(QFormLayout* form, const QString& title, QAbstractSpinBox* field,
+void addParameter(QFormLayout* form, const QString& title, QWidget* field,
                   int label_width) {
     auto* label = new QLabel(title);
     label->setMinimumWidth(label_width);
@@ -54,6 +53,7 @@ void addParameter(QFormLayout* form, const QString& title, QAbstractSpinBox* fie
 } // 匿名命名空间
 
 RegistrationSettings::RegistrationSettings(QWidget* parent) : QGroupBox(parent) {
+    const RegistrationOptions defaults;
     setObjectName("registrationSettings");
     // 页签已经标明“配准”，本控件不再重复绘制标题；外框可由主窗口样式统一处理。
     setTitle(QString());
@@ -63,24 +63,23 @@ RegistrationSettings::RegistrationSettings(QWidget* parent) : QGroupBox(parent) 
     layout->setAlignment(Qt::AlignTop);
 
     auto* method_label = new QLabel(QStringLiteral("配准方法"), this);
-    alignment_ = new ScrollSafeWidget<QComboBox>(this);
-    alignment_->setObjectName("alignmentMode");
-    // 显式保存枚举值，界面条目顺序不参与算法模式的判断。
-    alignment_->addItem(QStringLiteral("关闭（图片已对齐）"), static_cast<int>(Alignment::None));
-    alignment_->addItem(QStringLiteral("ECC 平移"), static_cast<int>(Alignment::Translation));
-    alignment_->addItem(QStringLiteral("ECC 仿射"), static_cast<int>(Alignment::Affine));
-    alignment_->addItem(QStringLiteral("SIFT 特征点单应性"), static_cast<int>(Alignment::FeatureHomography));
-    alignment_->addItem(QStringLiteral("ECC 单应性"), static_cast<int>(Alignment::EccHomography));
-    alignment_->setToolTip(QStringLiteral(
+    method_ = new ScrollSafeWidget<QComboBox>(this);
+    method_->setObjectName("registrationMethod");
+    // 算法与变换模型分别保存枚举值，界面条目顺序不参与计算配置的判断。
+    method_->addItem(QStringLiteral("关闭（图片已对齐）"), static_cast<int>(RegistrationMethod::None));
+    method_->addItem(QStringLiteral("ECC"), static_cast<int>(RegistrationMethod::Ecc));
+    method_->addItem(QStringLiteral("SIFT"), static_cast<int>(RegistrationMethod::Sift));
+    method_->setCurrentIndex(method_->findData(static_cast<int>(defaults.method)));
+    method_->setToolTip(QStringLiteral(
         "以第一张图片为参考，配准后裁剪所有图片共有的区域。\n"
-        "ECC 平移/仿射适合小幅位移或倍率变化；单应性可处理平面透视变化。\n"
-        "SIFT 需要足够可匹配的纹理；ECC 单应性适合初始偏差较小的图片。"));
-    method_label->setBuddy(alignment_);
-    alignment_->setAccessibleName(method_label->text());
+        "ECC 根据灰度相关性估计变换，适合初始对齐较好的图片，可另选变换模型。\n"
+        "SIFT 根据共同纹理匹配特征点，固定使用单应性变换。"));
+    method_label->setBuddy(method_);
+    method_->setAccessibleName(method_label->text());
     auto* method_layout = new QVBoxLayout;
     method_layout->setSpacing(6);
     method_layout->addWidget(method_label);
-    method_layout->addWidget(alignment_);
+    method_layout->addWidget(method_);
     layout->addLayout(method_layout);
 
     method_hint_ = new QLabel(this);
@@ -107,6 +106,19 @@ RegistrationSettings::RegistrationSettings(QWidget* parent) : QGroupBox(parent) 
     ecc_fields_ = new QWidget(this);
     ecc_fields_->setObjectName("registrationEccFields");
     auto* ecc_form = createParameterForm(ecc_fields_);
+    motion_model_ = new ScrollSafeWidget<QComboBox>(ecc_fields_);
+    motion_model_->setObjectName("registrationMotionModel");
+    motion_model_->addItem(QStringLiteral("平移"), static_cast<int>(MotionModel::Translation));
+    motion_model_->addItem(QStringLiteral("仿射"), static_cast<int>(MotionModel::Affine));
+    motion_model_->addItem(QStringLiteral("单应性"), static_cast<int>(MotionModel::Homography));
+    motion_model_->setCurrentIndex(motion_model_->findData(static_cast<int>(defaults.motion_model)));
+    motion_model_->setToolTip(QStringLiteral(
+        "仅用于 ECC，决定允许估计的几何变换。\n"
+        "平移：仅校正水平和垂直位移。\n"
+        "仿射：可校正平移、旋转、缩放和剪切。\n"
+        "单应性：可校正平面透视变化，需要较好的初始对齐。"));
+    addParameter(ecc_form, QStringLiteral("变换模型"), motion_model_, label_width);
+
     iterations_ = new ScrollSafeWidget<QSpinBox>(ecc_fields_);
     iterations_->setObjectName("registrationIterations");
     iterations_->setRange(1, 10000);
@@ -171,10 +183,12 @@ RegistrationSettings::RegistrationSettings(QWidget* parent) : QGroupBox(parent) 
 
     auto* reset = new QPushButton(QStringLiteral("恢复默认参数"), this);
     reset->setObjectName("resetRegistrationOptions");
-    reset->setToolTip(QStringLiteral("恢复全部配准参数的默认值，保留当前所选配准方法。"));
+    reset->setToolTip(QStringLiteral("恢复全部数值参数的默认值，保留当前配准算法与变换模型。"));
     layout->addWidget(reset);
 
-    connect(alignment_, qOverload<int>(&QComboBox::currentIndexChanged), this,
+    connect(method_, qOverload<int>(&QComboBox::currentIndexChanged), this,
+            [this](int) { updateParameterVisibility(); });
+    connect(motion_model_, qOverload<int>(&QComboBox::currentIndexChanged), this,
             [this](int) { updateParameterVisibility(); });
     connect(reset, &QPushButton::clicked, this, [this] { resetParameters(); });
     resetParameters();
@@ -183,7 +197,8 @@ RegistrationSettings::RegistrationSettings(QWidget* parent) : QGroupBox(parent) 
 
 RegistrationOptions RegistrationSettings::options() const {
     RegistrationOptions result;
-    result.method = static_cast<Alignment>(alignment_->currentData().toInt());
+    result.method = static_cast<RegistrationMethod>(method_->currentData().toInt());
+    result.motion_model = static_cast<MotionModel>(motion_model_->currentData().toInt());
     result.max_size = max_size_->value();
     result.iterations = iterations_->value();
     result.epsilon = epsilon_->value();
@@ -195,26 +210,28 @@ RegistrationOptions RegistrationSettings::options() const {
 }
 
 void RegistrationSettings::updateParameterVisibility() {
-    const auto method = static_cast<Alignment>(alignment_->currentData().toInt());
-    const bool enabled = method != Alignment::None;
-    const bool sift = method == Alignment::FeatureHomography;
+    const auto method = static_cast<RegistrationMethod>(method_->currentData().toInt());
+    const auto model = static_cast<MotionModel>(motion_model_->currentData().toInt());
+    const bool enabled = method != RegistrationMethod::None;
+    const bool ecc = method == RegistrationMethod::Ecc;
+    const bool sift = method == RegistrationMethod::Sift;
     if (!enabled)
         method_hint_->setText(QStringLiteral("已对齐可直接融合；选择配准方法后，可调整对应参数。"));
     else if (sift)
-        method_hint_->setText(QStringLiteral("利用共同纹理匹配图片，适合较大的位移和透视变化。"));
-    else if (method == Alignment::EccHomography)
+        method_hint_->setText(QStringLiteral("利用共同纹理匹配图片，固定使用单应性变换，适合位移和透视变化。"));
+    else if (model == MotionModel::Homography)
         method_hint_->setText(QStringLiteral("适合初始对齐较好的透视变化，以第一张图片为参考。"));
-    else if (method == Alignment::Translation)
+    else if (model == MotionModel::Translation)
         method_hint_->setText(QStringLiteral("仅校正水平和垂直位移，以第一张图片为参考。"));
     else
         method_hint_->setText(QStringLiteral("校正小幅位移、旋转和倍率变化，以第一张图片为参考。"));
     common_fields_->setVisible(enabled);
-    ecc_fields_->setVisible(enabled && !sift);
-    sift_fields_->setVisible(enabled && sift);
+    ecc_fields_->setVisible(ecc);
+    sift_fields_->setVisible(sift);
 }
 
 void RegistrationSettings::resetParameters() {
-    // 从公共配置类型读取默认值，避免界面与核心接口各自维护一套初始参数。
+    // 从公共配置类型读取数值默认值；算法与模型选择都保留，包括暂时隐藏的 ECC 模型。
     const RegistrationOptions defaults;
     max_size_->setValue(defaults.max_size);
     iterations_->setValue(defaults.iterations);

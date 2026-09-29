@@ -15,10 +15,13 @@ namespace {
 
 /// 配准参数独立校验；即使选择 None，也不接受非法枚举或暂未使用的无效参数。
 void validateOptions(const RegistrationOptions& options) {
-    if (options.method != Alignment::None && options.method != Alignment::Translation &&
-        options.method != Alignment::Affine && options.method != Alignment::FeatureHomography &&
-        options.method != Alignment::EccHomography)
+    if (options.method != RegistrationMethod::None && options.method != RegistrationMethod::Ecc &&
+        options.method != RegistrationMethod::Sift)
         throw std::invalid_argument("Unknown registration method");
+    // SIFT 和 None 不使用此模型，但仍拒绝无效配置，避免切换方法后才暴露非法枚举。
+    if (options.motion_model != MotionModel::Translation && options.motion_model != MotionModel::Affine &&
+        options.motion_model != MotionModel::Homography)
+        throw std::invalid_argument("Unknown registration motion model");
     if (options.iterations < 1 || options.iterations > 10000 ||
         !std::isfinite(options.epsilon) || options.epsilon <= 0 ||
         options.max_size < 16 || options.max_size > 8192 ||
@@ -91,11 +94,9 @@ cv::Mat checkedTransform(const cv::Mat& transform, const cv::Size& size) {
 /// 新方法只需提供估计器工厂并在这里增加分派；公共重采样和裁剪无需重复实现。
 std::unique_ptr<Estimator> makeEstimator(const cv::Mat& reference, const RegistrationOptions& options) {
     switch (options.method) {
-    case Alignment::FeatureHomography:
+    case RegistrationMethod::Sift:
         return makeHomographyEstimator(reference, options);
-    case Alignment::Translation:
-    case Alignment::Affine:
-    case Alignment::EccHomography:
+    case RegistrationMethod::Ecc:
         return makeEccEstimator(reference, options);
     default:
         throw std::invalid_argument("Unknown registration estimator");
@@ -107,9 +108,10 @@ void alignNormalized(std::vector<cv::Mat>& images, const RegistrationOptions& op
                      RegistrationResult& result, const ProgressCallback& progress) {
     const cv::Size size = images.front().size();
     result.crop = {0, 0, size.width, size.height};
-    const bool perspective = options.method == Alignment::FeatureHomography ||
-                             options.method == Alignment::EccHomography;
-    // 平移/仿射使用 2×3 输出约定，单应性使用 3×3，参考图始终为单位变换。
+    const bool perspective = options.method == RegistrationMethod::Sift ||
+                             (options.method == RegistrationMethod::Ecc &&
+                              options.motion_model == MotionModel::Homography);
+    // SIFT 固定使用单应性；ECC 的输出维度由运动模型决定，参考图始终为单位变换。
     for (size_t i = 0; i < images.size(); ++i)
         result.transforms.push_back(cv::Mat::eye(perspective ? 3 : 2, 3, CV_32F));
     // 缩小图像仅用于估计变换，随后将矩阵换回原始坐标，在原分辨率上重采样。
@@ -188,7 +190,7 @@ RegistrationResult registerImages(const std::vector<cv::Mat>& inputs, const Regi
     detail::validateImages(inputs);
     detail::registration::validateOptions(options);
     RegistrationResult result;
-    if (options.method == Alignment::None) {
+    if (options.method == RegistrationMethod::None) {
         // 跳过估计与重采样，但仍返回独立数据，调用者可以安全修改结果而不影响输入。
         result.crop = {0, 0, inputs.front().cols, inputs.front().rows};
         for (size_t i = 0; i < inputs.size(); ++i) {
@@ -210,7 +212,7 @@ RegistrationResult registerImages(const std::vector<cv::Mat>& inputs, const Regi
             result.images.push_back(std::move(restored));
         }
     }
-    if (options.method == Alignment::None) detail::report(progress, 95, "finish");
+    if (options.method == RegistrationMethod::None) detail::report(progress, 95, "finish");
     detail::report(progress, 100, "done");
     return result;
 }

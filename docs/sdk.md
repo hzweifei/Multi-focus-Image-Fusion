@@ -17,7 +17,7 @@ licenses/      第三方声明
 | `fusion.hpp` | `fuse()`、`FusionResult`；包含融合参数和进度约定 |
 | `fusion_options.hpp` | `FusionOptions`、`FusionMethod`、`FocusMeasure` |
 | `registration.hpp` | `registerImages()`、`RegistrationResult`；包含配准参数和进度约定 |
-| `registration_options.hpp` | `RegistrationOptions`、`Alignment` |
+| `registration_options.hpp` | `RegistrationOptions`、`RegistrationMethod`、`MotionModel` |
 | `pipeline.hpp` | `registerAndFuse()`、`PipelineResult`；包含两阶段公开接口 |
 | `progress.hpp` | `ProgressCallback`、`Cancelled` |
 | `export.hpp` | CMake 生成的库符号导出声明 |
@@ -59,7 +59,8 @@ cv::Mat combineAligned(const std::vector<cv::Mat>& images) {
 #include <mif/registration.hpp>
 
 mif::RegistrationOptions registration;
-registration.method = mif::Alignment::FeatureHomography;
+registration.method = mif::RegistrationMethod::Ecc;
+registration.motion_model = mif::MotionModel::Affine;
 auto registered = mif::registerImages(images, registration);
 // registered.images 为原位深的独立图像；crop 和 transforms 保存配准元数据。
 
@@ -75,7 +76,7 @@ cv::Mat fused = result.image;
 #include <mif/pipeline.hpp>
 
 mif::RegistrationOptions registration;
-registration.method = mif::Alignment::FeatureHomography;
+registration.method = mif::RegistrationMethod::Sift;
 mif::FusionOptions fusion;
 auto result = mif::registerAndFuse(images, registration, fusion);
 cv::Mat fused = result.fusion.image;
@@ -84,9 +85,13 @@ const auto& transforms = result.transforms;
 ```
 
 三个入口均要求至少两张同尺寸、同类型的灰度或 BGR 图像，支持 8 位、16 位无符号整数
-和 `[0, 1]` 内的有限 float32；输入不被修改。配准默认 `method = Alignment::None`，
+和 `[0, 1]` 内的有限 float32；输入不被修改。配准默认 `method = RegistrationMethod::None`，
 此时返回独立副本和完整图像范围。结果类型与矩阵坐标约定见公开头文件
 `mif/registration.hpp` 和 `mif/fusion.hpp` 中的说明。
+
+`method` 只选择算法；`motion_model` 只指定 ECC 的平移、仿射或单应性模型，
+默认 `MotionModel::Translation`。SIFT 固定求解单应性，忽略保留的合法模型值；
+关闭配准时也不使用该字段。两个枚举的非法值均会被拒绝。
 
 每个入口的最后一个参数均可传入 `ProgressCallback`。回调在调用线程执行，
 返回 `false` 抛出 `mif::Cancelled`；回调自身异常原样传播。
@@ -105,7 +110,7 @@ MSVC 下还会传递 `/utf-8`，以正确读取公开头文件中的中文注释
 | 旧接口 | 新接口 |
 |---|---|
 | `#include <mif/options.hpp>` | 按需使用 `fusion_options.hpp`、`registration_options.hpp`；各入口头已包含对应参数 |
-| `FusionOptions.alignment` | `RegistrationOptions.method` |
+| `FusionOptions.alignment` | `RegistrationOptions.method` 与 `motion_model`，对应关系见下表 |
 | `FusionOptions.alignment_iterations`、`alignment_epsilon`、`alignment_max_size` | `RegistrationOptions.iterations`、`epsilon`、`max_size` |
 | `FusionOptions.alignment_max_features`、`alignment_match_ratio` | `RegistrationOptions.max_features`、`match_ratio` |
 | `FusionOptions.alignment_ransac_threshold`、`alignment_min_inlier_ratio` | `RegistrationOptions.ransac_threshold`、`min_inlier_ratio` |
@@ -113,11 +118,36 @@ MSVC 下还会传递 `/utf-8`，以正确读取公开头文件中的中文注释
 | 从 `FusionResult` 读取 `crop`、`transforms` | 从 `RegistrationResult` 或 `PipelineResult` 读取；纯 `FusionResult` 仅含 `image`、`focus_indices`、`weights` |
 | 组合结果的 `result.image`、`result.focus_indices`、`result.weights` | C++ 使用 `result.fusion.image`、`result.fusion.focus_indices`、`result.fusion.weights`；`crop`、`transforms` 仍在外层 |
 
+### 配准算法与模型
+
+旧 `Alignment` 枚举已移除；不再把 ECC 的三种模型放进算法枚举。
+无论旧枚举来自 `FusionOptions.alignment` 还是 `RegistrationOptions.method`，均按下表迁移：
+
+| 旧 `Alignment` 成员 | 新 `RegistrationMethod` | 新 `MotionModel` |
+|---|---|---|
+| `None` | `None` | 不使用，保留默认值即可 |
+| `Translation` | `Ecc` | `Translation` |
+| `Affine` | `Ecc` | `Affine` |
+| `EccHomography` | `Ecc` | `Homography` |
+| `FeatureHomography` | `Sift` | 不使用，SIFT 固定单应性 |
+
+例如，旧 `options.method = mif::Alignment::EccHomography` 改为：
+
+```cpp
+options.method = mif::RegistrationMethod::Ecc;
+options.motion_model = mif::MotionModel::Homography;
+```
+
+Python 对应 `options.method = mif.RegistrationMethod.ECC` 和
+`options.motion_model = mif.MotionModel.HOMOGRAPHY`。旧整数枚举值不能直接转换为新值。
+算法内部仍沿用原来的求解、重采样和裁剪流程。
+
 Python 同样使用独立 `RegistrationOptions` 和 `FusionOptions`。旧的配准加融合调用
 改为 `register_and_fuse(images, registration_options, fusion_options)`，返回的字典保持平坦，
 包含 `image`、`focus_indices`、`weights`、`crop`、`transforms`。`fuse_detailed()` 只返回前三项，
 `register_images()` 返回 `images`、`crop`、`transforms`。
 
 公开参数和结果结构已变化，**SDK 调用方必须使用配套的新头文件与新库重新编译**。
+更新 Python 包时也应同时更新包装文件、扩展模块和核心库，避免混用新旧接口。
 组合流程与显式两步采用相同数据路径：整数图像配准后先恢复原位深，再交给融合。
 这会引入整数舍入，与旧版配准和融合之间直接传递浮点工作图相比，可能产生少量像素差异。

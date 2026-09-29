@@ -1,7 +1,9 @@
 """单独配准示例：python register_images.py aligned focus_01.png focus_02.png
 
-运行前安装 mif、NumPy 和 OpenCV 的 Python 包。--method 可选择配准方法，
-默认 translation；输出保留位深，整数图写 PNG，浮点图写无压缩 TIFF。
+运行前安装 mif、NumPy 和 OpenCV 的 Python 包。--method 选择 none/ecc/sift，
+默认 ecc；--motion-model 选择 ECC 的 translation/affine/homography，默认 translation。
+SIFT 固定求解单应性，--motion-model 只在 ECC 下生效。
+输出保留位深，整数图写 PNG，浮点图写无压缩 TIFF。
 这些输出之后可交给 fuse_images.py，也可在内存中直接交给 mif.fuse。
 """
 import argparse
@@ -14,8 +16,10 @@ import mif
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("output_dir", type=Path, help="保存配准图像的目录")
 parser.add_argument("inputs", nargs="+", help="至少两张同尺寸、同精度图像")
-parser.add_argument("--method", default="translation",
-                    choices=("none", "translation", "affine", "feature-homography", "ecc-homography"))
+parser.add_argument("--method", default="ecc", choices=("none", "ecc", "sift"),
+                    help="配准算法；SIFT 固定求解单应性（默认：ecc）")
+parser.add_argument("--motion-model", default="translation", choices=("translation", "affine", "homography"),
+                    help="仅 ECC 使用的运动模型（默认：translation）")
 args = parser.parse_args()
 if len(args.inputs) < 2:
     parser.error("at least two input images are required")
@@ -26,12 +30,15 @@ if any(image is None for image in images):
 # 这里只创建配准设置，不需要准备任何融合参数。
 options = mif.RegistrationOptions()
 options.method = {
-    "none": mif.Alignment.NONE,
-    "translation": mif.Alignment.TRANSLATION,
-    "affine": mif.Alignment.AFFINE,
-    "feature-homography": mif.Alignment.FEATURE_HOMOGRAPHY,
-    "ecc-homography": mif.Alignment.ECC_HOMOGRAPHY,
+    "none": mif.RegistrationMethod.NONE,
+    "ecc": mif.RegistrationMethod.ECC,
+    "sift": mif.RegistrationMethod.SIFT,
 }[args.method]
+options.motion_model = {
+    "translation": mif.MotionModel.TRANSLATION,
+    "affine": mif.MotionModel.AFFINE,
+    "homography": mif.MotionModel.HOMOGRAPHY,
+}[args.motion_model]
 registered = mif.register_images(images, options)
 args.output_dir.mkdir(parents=True, exist_ok=True)
 for index, image in enumerate(registered["images"], start=1):

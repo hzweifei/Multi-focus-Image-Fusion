@@ -17,6 +17,21 @@ int main() {
     if (pipeline.crop != registered.crop || pipeline.transforms.size() != 2 ||
         cv::norm(pipeline.fusion.image, result.image, cv::NORM_INF) != 0)
         return 2;
+    // 使用新参数布局实际跨越 DLL 边界，验证不同模型的分派和返回矩阵格式。
+    cv::Mat texture(129, 193, CV_8U);
+    cv::RNG random(20260929);
+    random.fill(texture, cv::RNG::UNIFORM, 20, 235);
+    mif::RegistrationOptions registration;
+    registration.method = mif::RegistrationMethod::Ecc;
+    for (const auto model : {mif::MotionModel::Translation, mif::MotionModel::Affine,
+                            mif::MotionModel::Homography}) {
+        registration.motion_model = model;
+        const auto aligned = mif::registerImages({texture, texture}, registration);
+        const int expected_rows = model == mif::MotionModel::Homography ? 3 : 2;
+        if (aligned.images.size() != 2 || aligned.transforms[1].rows != expected_rows ||
+            cv::norm(aligned.images[1], texture(aligned.crop), cv::NORM_INF) > 1)
+            return 3;
+    }
     std::cout << "Installed SDK: headers, import library and runtime OK\n";
     return 0;
 }

@@ -13,7 +13,7 @@ algorithms/
 │   ├── fusion.hpp                 # 纯融合入口 fuse() 与 FusionResult
 │   ├── fusion_options.hpp         # 融合方法、清晰度指标与参数
 │   ├── registration.hpp           # 独立配准入口 registerImages() 与 RegistrationResult
-│   ├── registration_options.hpp   # 配准模式与参数
+│   ├── registration_options.hpp   # 配准算法、ECC 变换模型与参数
 │   ├── pipeline.hpp               # 组合入口 registerAndFuse() 与 PipelineResult
 │   └── progress.hpp               # 共用进度回调与取消异常
 └── src/
@@ -35,7 +35,7 @@ algorithms/
     └── registration/
         ├── registration.hpp      # 内部 Estimator 约定与方法工厂
         ├── registration.cpp      # 公开 registerImages()、参数校验、变换与裁剪
-        ├── ecc.cpp               # ECC 平移、仿射与单应性估计
+        ├── ecc.cpp               # 同一个 ECC 算法，按变换模型估计平移、仿射或单应性
         └── sift_homography.cpp   # SIFT 匹配与 RANSAC 单应性估计
 ```
 
@@ -51,6 +51,8 @@ algorithms/
 - **`registration/`** 实现 `mif::registerImages()`，只校验配准参数，返回保留原位深的
   图像副本、共同裁剪区域和变换矩阵。每种估计方法各一个 `.cpp`，
   共同的坐标换算、重采样与输出整理留在 `registration.cpp`。
+  `RegistrationMethod` 选择 ECC 或 SIFT；ECC 的 `MotionModel` 只改变求解模型，
+  三个模型复用同一个 `ecc.cpp`，不按模型新增算法文件。SIFT 固定求解单应性。
 - **`common/`** 放共用的输入校验、归一化、灰度转换和进度工具。
 
 依赖方向为 **`pipeline → fusion / registration → common`**。

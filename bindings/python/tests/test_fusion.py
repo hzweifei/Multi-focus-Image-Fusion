@@ -80,13 +80,16 @@ class FusionTests(unittest.TestCase):
         np.testing.assert_allclose(result["image"], 30000, atol=1)
 
     def test_registration_options(self):
-        """配准方法与参数只在 RegistrationOptions 中配置，默认值由核心提供。"""
+        """配准算法与 ECC 运动模型分开配置，数值参数默认值仍由核心提供。"""
         options = mif.RegistrationOptions()
-        self.assertEqual(options.method, mif.Alignment.NONE)
-        self.assertNotEqual(mif.Alignment.FEATURE_HOMOGRAPHY, mif.Alignment.ECC_HOMOGRAPHY)
-        for alignment in (mif.Alignment.FEATURE_HOMOGRAPHY, mif.Alignment.ECC_HOMOGRAPHY):
-            options.method = alignment
-            self.assertEqual(options.method, alignment)
+        self.assertEqual(options.method, mif.RegistrationMethod.NONE)
+        self.assertEqual(options.motion_model, mif.MotionModel.TRANSLATION)
+        for method in (mif.RegistrationMethod.NONE, mif.RegistrationMethod.ECC, mif.RegistrationMethod.SIFT):
+            options.method = method
+            self.assertEqual(options.method, method)
+        for model in (mif.MotionModel.TRANSLATION, mif.MotionModel.AFFINE, mif.MotionModel.HOMOGRAPHY):
+            options.motion_model = model
+            self.assertEqual(options.motion_model, model)
         for field, default, changed in (
                 ("iterations", 150, 200), ("epsilon", 1e-5, 1e-6), ("max_size", 1200, 600),
                 ("max_features", 4000, 5000), ("match_ratio", 0.75, 0.8),
@@ -96,10 +99,24 @@ class FusionTests(unittest.TestCase):
             self.assertEqual(getattr(options, field), changed)
 
     def test_independent_option_types(self):
-        """旧混合配置属性明确移除，错误阶段的参数类型不得隐式接受或转换。"""
+        """旧枚举和混合配置属性明确移除，各种枚举与阶段参数不能互相替代。"""
         fusion = mif.FusionOptions()
         registration = mif.RegistrationOptions()
         image = np.full((20, 30), 100, np.uint8)
+        self.assertFalse(hasattr(mif, "Alignment"))
+        self.assertFalse(hasattr(mif._mif, "Alignment"))
+        for old_member in ("TRANSLATION", "AFFINE", "FEATURE_HOMOGRAPHY", "ECC_HOMOGRAPHY"):
+            self.assertFalse(hasattr(mif.RegistrationMethod, old_member))
+        # 即使底层枚举值相同，算法、模型和融合算法也不能交叉赋值。
+        for field, values in (
+                ("method", (mif.MotionModel.TRANSLATION, mif.FusionMethod.GUIDED_FILTER, 99)),
+                ("motion_model", (mif.RegistrationMethod.ECC, mif.FusionMethod.GUIDED_FILTER, 99))):
+            for value in values:
+                with self.subTest(field=field, value=value), self.assertRaises(TypeError):
+                    setattr(registration, field, value)
+        for enum in (mif.RegistrationMethod, mif.MotionModel):
+            with self.assertRaises(ValueError):
+                enum(99)
         for old_field in ("alignment", "alignment_iterations", "alignment_epsilon", "alignment_max_size",
                           "alignment_max_features", "alignment_match_ratio", "alignment_ransac_threshold",
                           "alignment_min_inlier_ratio"):
@@ -148,8 +165,8 @@ class FusionTests(unittest.TestCase):
 
     def test_homography_diagnostics_and_ownership(self):
         """两种单应性独立返回配准图和 3×3 变换，支持只读切片并可继续纯融合。"""
-        for alignment in (mif.Alignment.FEATURE_HOMOGRAPHY, mif.Alignment.ECC_HOMOGRAPHY):
-            with self.subTest(alignment=alignment):
+        for method in (mif.RegistrationMethod.SIFT, mif.RegistrationMethod.ECC):
+            with self.subTest(method=method):
                 backing = np.repeat(alignment_texture(), 2, axis=1)
                 image = backing[:, ::2]
                 images = [image, image]
@@ -157,7 +174,8 @@ class FusionTests(unittest.TestCase):
                 for source in images:
                     source.flags.writeable = False
                 options = mif.RegistrationOptions()
-                options.method = alignment
+                options.method = method
+                options.motion_model = mif.MotionModel.HOMOGRAPHY
                 result = mif.register_images(images, options)
                 aligned = result["images"]
                 transforms = result["transforms"]
@@ -191,6 +209,35 @@ class FusionTests(unittest.TestCase):
                 np.testing.assert_array_equal(aligned[1], second_aligned)
                 for source, original in zip(images, originals):
                     np.testing.assert_array_equal(source, original)
+
+    def test_motion_model_ignored_outside_ecc(self):
+        """SIFT 对三种合法模型都求解相同单应性，NONE 则始终返回 2×3 单位变换。"""
+        reference = alignment_texture()
+        images = [reference, np.roll(reference, (1, 2), axis=(0, 1))]
+        baseline = None
+        for model in (mif.MotionModel.TRANSLATION, mif.MotionModel.AFFINE, mif.MotionModel.HOMOGRAPHY):
+            with self.subTest(model=model):
+                options = mif.RegistrationOptions()
+                options.motion_model = model
+                unregistered = mif.register_images(images, options)
+                self.assertEqual(unregistered["crop"], (0, 0, reference.shape[1], reference.shape[0]))
+                for original, output, transform in zip(images, unregistered["images"], unregistered["transforms"]):
+                    np.testing.assert_array_equal(output, original)
+                    np.testing.assert_array_equal(transform, np.eye(2, 3))
+
+                options.method = mif.RegistrationMethod.SIFT
+                registered = mif.register_images(images, options)
+                self.assertEqual(len(registered["transforms"]), len(images))
+                for transform in registered["transforms"]:
+                    self.assertEqual(transform.shape, (3, 3))
+                if baseline is None:
+                    baseline = registered
+                else:
+                    self.assertEqual(registered["crop"], baseline["crop"])
+                    for key in ("images", "transforms"):
+                        self.assertEqual(len(registered[key]), len(baseline[key]))
+                        for actual, expected in zip(registered[key], baseline[key]):
+                            np.testing.assert_array_equal(actual, expected)
 
     def test_registration_parameter_validation(self):
         """配准参数在配准入口被拒绝；非法配准配置不妨碍单独调用纯融合。"""
@@ -233,7 +280,7 @@ class FusionTests(unittest.TestCase):
                        [np.full((20, 30), 1.1, np.float32)] * 2):
             with self.assertRaises((ValueError, TypeError)):
                 mif.register_images(images)
-        for method in (mif.Alignment.TRANSLATION, mif.Alignment.FEATURE_HOMOGRAPHY):
+        for method in (mif.RegistrationMethod.ECC, mif.RegistrationMethod.SIFT):
             options = mif.RegistrationOptions()
             options.method = method
             with self.assertRaises(RuntimeError):
@@ -243,17 +290,27 @@ class FusionTests(unittest.TestCase):
         """真实位移输入在各精度和方法下，显式两步与组合入口具有相同结果和元数据。"""
         texture = alignment_texture()
         shifted = np.roll(texture, (1, 2), axis=(0, 1))
-        methods = (mif.Alignment.NONE, mif.Alignment.TRANSLATION, mif.Alignment.AFFINE,
-                   mif.Alignment.FEATURE_HOMOGRAPHY, mif.Alignment.ECC_HOMOGRAPHY)
+        configurations = (
+            (mif.RegistrationMethod.NONE, mif.MotionModel.TRANSLATION),
+            (mif.RegistrationMethod.ECC, mif.MotionModel.TRANSLATION),
+            (mif.RegistrationMethod.ECC, mif.MotionModel.AFFINE),
+            (mif.RegistrationMethod.ECC, mif.MotionModel.HOMOGRAPHY),
+            (mif.RegistrationMethod.SIFT, mif.MotionModel.TRANSLATION),
+        )
         for dtype in (np.uint8, np.uint16, np.float32):
             scale = 257 if dtype == np.uint16 else 1 / 255 if dtype == np.float32 else 1
             images = [(image.astype(np.float32) * scale).astype(dtype) for image in (texture, shifted)]
-            for method in methods:
+            for method, model in configurations:
                 registration_options = mif.RegistrationOptions()
                 registration_options.method = method
+                registration_options.motion_model = model
                 registered = mif.register_images(images, registration_options)
+                expected_shape = (3, 3) if method == mif.RegistrationMethod.SIFT or (
+                    method == mif.RegistrationMethod.ECC and model == mif.MotionModel.HOMOGRAPHY) else (2, 3)
+                for transform in registered["transforms"]:
+                    self.assertEqual(transform.shape, expected_shape)
                 for fusion_method in (mif.FusionMethod.GUIDED_FILTER, mif.FusionMethod.LAPLACIAN_PYRAMID):
-                    with self.subTest(dtype=dtype, registration=method, fusion=fusion_method):
+                    with self.subTest(dtype=dtype, registration=method, model=model, fusion=fusion_method):
                         fusion_options = mif.FusionOptions()
                         fusion_options.method = fusion_method
                         fusion_options.keep_weight_maps = True

@@ -1,5 +1,6 @@
 #include "fixtures.hpp"
 #include <mif/pipeline.hpp>
+#include <utility>
 
 namespace {
 
@@ -21,15 +22,23 @@ void testPipeline() {
     cv::Mat shifted;
     const cv::Mat transform = (cv::Mat_<float>(2, 3) << 1, 0, 1.25, 0, 1, -1.5);
     cv::warpAffine(reference, shifted, transform, reference.size(), cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
+    // 算法与模型分别设置，组合入口需要保持各条配准路径的图像和矩阵格式。
+    const std::vector<std::pair<mif::RegistrationMethod, mif::MotionModel>> registration_cases{
+        {mif::RegistrationMethod::None, mif::MotionModel::Translation},
+        {mif::RegistrationMethod::Ecc, mif::MotionModel::Translation},
+        {mif::RegistrationMethod::Ecc, mif::MotionModel::Affine},
+        {mif::RegistrationMethod::Ecc, mif::MotionModel::Homography},
+        {mif::RegistrationMethod::Sift, mif::MotionModel::Translation}};
     for (const int depth : {CV_8U, CV_16U, CV_32F}) {
         cv::Mat first, second;
         const double scale = depth == CV_16U ? 257.0 : depth == CV_32F ? 1.0 / 255.0 : 1.0;
         reference.convertTo(first, depth, scale);
         shifted.convertTo(second, depth, scale);
         const std::vector<cv::Mat> images{first, second};
-        for (const auto mode : {mif::Alignment::None, mif::Alignment::Translation}) {
+        for (const auto& [registration_method, motion_model] : registration_cases) {
             mif::RegistrationOptions registration;
-            registration.method = mode;
+            registration.method = registration_method;
+            registration.motion_model = motion_model;
             const auto registered = mif::registerImages(images, registration);
             for (const auto method : {mif::FusionMethod::GuidedFilter, mif::FusionMethod::LaplacianPyramid}) {
                 mif::FusionOptions fusion;
@@ -53,7 +62,7 @@ void testPipeline() {
                     require(cv::norm(combined.transforms[i], registered.transforms[i], cv::NORM_INF) == 0,
                             "Pipeline changed registration transform");
                 // None 流程与直接融合也必须一致，且纯融合不会出现配准阶段。
-                if (mode == mif::Alignment::None) {
+                if (registration_method == mif::RegistrationMethod::None) {
                     const auto direct = mif::fuse(images, fusion, [](int, const std::string& stage) {
                         require(stage != "align", "Pure fusion invoked registration");
                         return true;
@@ -65,7 +74,8 @@ void testPipeline() {
     }
 
     mif::RegistrationOptions registration;
-    registration.method = mif::Alignment::Translation;
+    registration.method = mif::RegistrationMethod::Ecc;
+    registration.motion_model = mif::MotionModel::Translation;
     const std::vector<cv::Mat> images{reference, shifted};
     // 组合层不能吞掉任一阶段的取消，也不能把调用者异常换成处理失败。
     struct CallbackFailure : std::runtime_error { using std::runtime_error::runtime_error; };

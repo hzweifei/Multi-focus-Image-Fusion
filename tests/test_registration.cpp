@@ -144,7 +144,7 @@ void checkStack(const std::vector<cv::Mat>& images, const std::vector<cv::Mat>& 
 
 /// 左右互补的轻度失焦仍保留可匹配的轮廓；使用已知几何变换检查焦点变化下的配准。
 /// 该用例验证几何精度，不以融合结果更接近第一张输入作为成功依据。
-void checkComplementaryFocus(mif::Alignment alignment, const std::string& label) {
+void checkComplementaryFocus(mif::RegistrationMethod method, const std::string& label) {
     const cv::Mat sharp = registrationTexture(385, 577);
     cv::Mat blurred;
     cv::GaussianBlur(sharp, blurred, {0, 0}, 1.15);
@@ -156,7 +156,8 @@ void checkComplementaryFocus(mif::Alignment alignment, const std::string& label)
     const cv::Mat truth = (cv::Mat_<double>(3, 3) <<
         1.0008, 0.0007, 1.4, -0.0006, 0.9996, -1.1, 7e-7, -6e-7, 1.0);
     mif::RegistrationOptions options;
-    options.method = alignment;
+    options.method = method;
+    options.motion_model = mif::MotionModel::Homography;
     options.iterations = 300;
     options.epsilon = 1e-7;
     checkStack({reference, transformed(source_focus, truth)},
@@ -165,7 +166,7 @@ void checkComplementaryFocus(mif::Alignment alignment, const std::string& label)
 
 /// 完全相同的高位深图像无需几何重采样损失；检查数值恢复，防止 SIFT 的 8 位
 /// 特征预处理错误地替换原始像素。只检查输出类型无法发现这种精度丢失。
-void checkSixteenBitPrecision(mif::Alignment alignment) {
+void checkSixteenBitPrecision(mif::RegistrationMethod method) {
     cv::Mat image;
     registrationTexture(257, 383).convertTo(image, CV_16U, 65535.0);
     const cv::Mat before = image.clone();
@@ -175,7 +176,8 @@ void checkSixteenBitPrecision(mif::Alignment alignment) {
             if (image.at<unsigned short>(y, x) % 257 != 0) ++low_bit_pixels;
     require(low_bit_pixels > image.total() / 2, "Precision fixture lacks meaningful 16-bit values");
     mif::RegistrationOptions options;
-    options.method = alignment;
+    options.method = method;
+    options.motion_model = mif::MotionModel::Homography;
     const auto result = mif::registerImages({image, image}, options);
     require(cv::norm(image, before, cv::NORM_INF) == 0, "16-bit source was modified");
     checkCoverage(result, {image, image});
@@ -189,10 +191,11 @@ void checkSixteenBitPrecision(mif::Alignment alignment) {
 }
 
 /// 配准失败必须有可定位到输入的序号；公开错误约定使用从 1 开始的编号。
-void expectRegistrationFailure(const std::vector<cv::Mat>& images, mif::Alignment alignment,
-                               int expected_index) {
+void expectRegistrationFailure(const std::vector<cv::Mat>& images, mif::RegistrationMethod method,
+                               int expected_index, mif::MotionModel model = mif::MotionModel::Homography) {
     mif::RegistrationOptions options;
-    options.method = alignment;
+    options.method = method;
+    options.motion_model = model;
     try {
         mif::registerImages(images, options);
     } catch (const std::runtime_error& error) {
@@ -205,19 +208,20 @@ void expectRegistrationFailure(const std::vector<cv::Mat>& images, mif::Alignmen
 
 } // 匿名命名空间
 
-/// 平移与仿射仍使用 2×3 元数据；独立输出的每张配准图都必须符合相应变换。
+/// ECC 的平移与仿射模型使用同一方法入口，返回 2×3 元数据；逐图验证变换与像素。
 void testRegistrationAlignment() {
     const auto image = texture(161, 241);
-    for (auto mode : {mif::Alignment::Translation, mif::Alignment::Affine}) {
+    for (auto model : {mif::MotionModel::Translation, mif::MotionModel::Affine}) {
         cv::Mat warp = (cv::Mat_<float>(2, 3) << 1, 0, 2.25, 0, 1, -1.75);
-        if (mode == mif::Alignment::Affine) {
+        if (model == mif::MotionModel::Affine) {
             warp.at<float>(0, 0) = 1.005f;
             warp.at<float>(0, 1) = 0.003f;
         }
         cv::Mat shifted;
         cv::warpAffine(image, shifted, warp, image.size(), cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
         mif::RegistrationOptions options;
-        options.method = mode;
+        options.method = mif::RegistrationMethod::Ecc;
+        options.motion_model = model;
         const auto result = mif::registerImages({image, shifted}, options);
         require(result.crop.area() < image.rows * image.cols, "Alignment did not crop invalid borders");
         require(result.crop.width > image.cols - 15 && result.crop.height > image.rows - 15,
@@ -232,7 +236,7 @@ void testRegistrationAlignment() {
         result.transforms[1].copyTo(actual.rowRange(0, 2));
         warp.copyTo(expected.rowRange(0, 2));
         checkProjection(actual, expected, image.size(), 0.4, 0.9,
-                        mode == mif::Alignment::Translation ? "ECC translation" : "ECC affine");
+                        model == mif::MotionModel::Translation ? "ECC translation" : "ECC affine");
         checkCoverage(result, {image, shifted});
         require(cv::norm(result.images.front(), image(result.crop), cv::NORM_INF) == 0,
                 "The reference image changed during registration");
@@ -242,7 +246,8 @@ void testRegistrationAlignment() {
                 "Registered source differs excessively from the reference");
     }
     const cv::Mat flat(32, 32, CV_8U, cv::Scalar(40));
-    expectRegistrationFailure({flat, flat}, mif::Alignment::Translation, 1);
+    expectRegistrationFailure({flat, flat}, mif::RegistrationMethod::Ecc, 1,
+                              mif::MotionModel::Translation);
 }
 
 /// SIFT 应能恢复比 ECC 小运动用例更大的位移；三帧共同裁剪也必须保持有效覆盖。
@@ -253,12 +258,18 @@ void testRegistrationHomography() {
     const cv::Mat second = (cv::Mat_<double>(3, 3) <<
         0.994, -0.008, -22.5, 0.006, 1.008, 17.3, -1.4e-5, 9e-6, 1.0);
     mif::RegistrationOptions options;
-    options.method = mif::Alignment::FeatureHomography;
+    options.method = mif::RegistrationMethod::Sift;
     // 强制缩小奇数尺寸大图，使横纵实际缩放比例不同，覆盖原图坐标恢复路径。
     options.max_size = 601;
-    checkStack({reference, transformed(reference, first), transformed(reference, second)},
-               {cv::Mat::eye(3, 3, CV_64F), first, second}, options, 0.50, 1.00,
-               "SIFT downscaled three-frame homography");
+    const std::vector<cv::Mat> images{reference, transformed(reference, first), transformed(reference, second)};
+    const std::vector<cv::Mat> truth{cv::Mat::eye(3, 3, CV_64F), first, second};
+    // SIFT 固定估计单应性，不能因合法但未使用的 ECC 模型设置而降为平移或仿射。
+    // 每种设置都检查三帧的 3×3 输出、原图网格误差和共同裁剪后的逐像素覆盖。
+    for (auto model : {mif::MotionModel::Translation, mif::MotionModel::Affine, mif::MotionModel::Homography}) {
+        options.motion_model = model;
+        checkStack(images, truth, options, 0.50, 1.00,
+                   "SIFT downscaled three-frame homography, model " + std::to_string(static_cast<int>(model)));
+    }
     checkComplementaryFocus(options.method, "SIFT complementary focus");
     checkSixteenBitPrecision(options.method);
 }
@@ -269,7 +280,8 @@ void testRegistrationEcc() {
     const cv::Mat truth = (cv::Mat_<double>(3, 3) <<
         1.0018, 0.0014, 2.2, -0.0011, 0.9989, -1.4, 1.2e-6, -9e-7, 1.0);
     mif::RegistrationOptions options;
-    options.method = mif::Alignment::EccHomography;
+    options.method = mif::RegistrationMethod::Ecc;
+    options.motion_model = mif::MotionModel::Homography;
     options.max_size = 501;
     options.iterations = 300;
     options.epsilon = 1e-7;
@@ -284,19 +296,19 @@ void testRegistrationEcc() {
 void testRegistrationFailure() {
     const cv::Mat reference = registrationTexture(193, 257);
     const cv::Mat flat(reference.size(), CV_32F, cv::Scalar(0.4));
-    for (auto alignment : {mif::Alignment::FeatureHomography, mif::Alignment::EccHomography}) {
-        expectRegistrationFailure({flat, reference}, alignment, 1);
-        expectRegistrationFailure({reference, flat}, alignment, 2);
+    for (auto method : {mif::RegistrationMethod::Sift, mif::RegistrationMethod::Ecc}) {
+        expectRegistrationFailure({flat, reference}, method, 1);
+        expectRegistrationFailure({reference, flat}, method, 2);
     }
-    expectRegistrationFailure({reference, reference, flat}, mif::Alignment::EccHomography, 3);
+    expectRegistrationFailure({reference, reference, flat}, mif::RegistrationMethod::Ecc, 3);
 
     // 非常量的线性灰度坡面仍没有足够特征点，不能仅靠非零标准差宣称可配准。
     cv::Mat ramp(reference.size(), CV_32F);
     for (int y = 0; y < ramp.rows; ++y)
         for (int x = 0; x < ramp.cols; ++x)
             ramp.at<float>(y, x) = 0.2f + 0.6f * x / static_cast<float>(ramp.cols - 1);
-    expectRegistrationFailure({ramp, reference}, mif::Alignment::FeatureHomography, 1);
-    expectRegistrationFailure({reference, ramp}, mif::Alignment::FeatureHomography, 2);
+    expectRegistrationFailure({ramp, reference}, mif::RegistrationMethod::Sift, 1);
+    expectRegistrationFailure({reference, ramp}, mif::RegistrationMethod::Sift, 2);
 
     const cv::Mat small(17, 19, CV_8U, cv::Scalar(80));
     auto rejects = [&](const mif::RegistrationOptions& options) {
@@ -305,7 +317,7 @@ void testRegistrationFailure() {
         } catch (const std::invalid_argument&) {
             return;
         }
-        throw std::runtime_error("Invalid registration options were accepted while alignment was disabled");
+        throw std::runtime_error("Invalid registration options were accepted");
     };
     for (int value : {63, 100001}) {
         mif::RegistrationOptions options;
@@ -353,9 +365,37 @@ void testRegistrationFailure() {
         require(result.images.size() == 2 && result.images.front().size() == small.size(),
                 "A valid registration option boundary was rejected");
     }
-    mif::RegistrationOptions unknown;
-    unknown.method = static_cast<mif::Alignment>(99);
-    rejects(unknown);
+    for (int value : {-1, 3, 99}) {
+        mif::RegistrationOptions unknown;
+        unknown.method = static_cast<mif::RegistrationMethod>(value);
+        rejects(unknown);
+    }
+    // 运动模型是独立枚举；None 和 SIFT 虽不使用它，仍须在求解前拒绝非法值。
+    for (auto method : {mif::RegistrationMethod::None, mif::RegistrationMethod::Ecc,
+                        mif::RegistrationMethod::Sift}) {
+        for (int value : {-1, 3, 99}) {
+            mif::RegistrationOptions unknown;
+            unknown.method = method;
+            unknown.motion_model = static_cast<mif::MotionModel>(value);
+            rejects(unknown);
+        }
+    }
+    // 关闭配准时任何合法模型都不执行求解，也不能改变单位变换的 2×3 输出约定。
+    for (auto model : {mif::MotionModel::Translation, mif::MotionModel::Affine, mif::MotionModel::Homography}) {
+        mif::RegistrationOptions disabled;
+        disabled.motion_model = model;
+        const auto result = mif::registerImages({small, small}, disabled);
+        require(result.crop == cv::Rect(0, 0, small.cols, small.rows),
+                "An unused motion model changed the None crop");
+        require(result.transforms.size() == 2, "None registration omitted transform metadata");
+        for (const auto& transform : result.transforms) {
+            require(transform.size() == cv::Size(3, 2) && transform.type() == CV_32FC1,
+                    "None registration must always return 2 x 3 float32 matrices");
+            require(cv::norm(transform, cv::Mat::eye(2, 3, CV_32F), cv::NORM_INF) == 0,
+                    "An unused motion model changed a None transform");
+        }
+        checkCoverage(result, {small, small});
+    }
 
     // 独立配准入口自身负责输入校验，调用者无需先调用融合函数来检查图像。
     auto rejects_images = [](const std::vector<cv::Mat>& images) {
@@ -399,7 +439,8 @@ void testRegistrationFailure() {
 
     // 配准自己的进度必须从零到完成保持单调，取消不能被重包装为普通求解失败。
     mif::RegistrationOptions ecc;
-    ecc.method = mif::Alignment::Translation;
+    ecc.method = mif::RegistrationMethod::Ecc;
+    ecc.motion_model = mif::MotionModel::Translation;
     last = -1;
     mif::registerImages({reference, reference}, ecc, [&](int percent, const std::string&) {
         require(percent >= last && percent >= 0 && percent <= 100, "ECC progress is not monotonic");

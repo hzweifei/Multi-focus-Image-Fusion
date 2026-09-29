@@ -4,9 +4,10 @@ fuse/fuse_detailed 只执行融合，register_images 只执行配准；需要连
 调用 register_and_fuse，或把 register_images 返回的 images 显式传给 fuse。
 两个阶段分别使用 RegistrationOptions 和 FusionOptions，均不使用 AI 模型。
 
-迁移：原 FusionOptions.alignment 改为 RegistrationOptions.method，原
-alignment_* 字段去掉此前缀后移到 RegistrationOptions。旧的配准加融合调用
-改用 register_and_fuse；fuse_detailed 不再返回 crop 和 transforms。
+迁移：原 Alignment 已移除。RegistrationOptions.method 使用 RegistrationMethod，
+ECC 的平移/仿射/单应性改由 motion_model 选择 MotionModel；SIFT 固定求解单应性。
+原 FusionOptions.alignment_* 数值字段去掉此前缀后移到 RegistrationOptions。
+旧的配准加融合调用改用 register_and_fuse；fuse_detailed 不再返回 crop 和 transforms。
 """
 import os
 from pathlib import Path
@@ -16,9 +17,9 @@ _dll_directory = os.add_dll_directory(str(Path(__file__).resolve().parent)) if o
 
 import numpy as np
 from . import _mif
-from ._mif import Alignment, FocusMeasure, FusionMethod, FusionOptions, RegistrationOptions
+from ._mif import FocusMeasure, FusionMethod, FusionOptions, MotionModel, RegistrationMethod, RegistrationOptions
 
-__all__ = ["Alignment", "FocusMeasure", "FusionMethod", "FusionOptions", "RegistrationOptions",
+__all__ = ["FocusMeasure", "FusionMethod", "FusionOptions", "MotionModel", "RegistrationMethod", "RegistrationOptions",
            "fuse", "fuse_detailed", "register_images", "register_and_fuse"]
 __version__ = "0.1.0"
 
@@ -76,11 +77,14 @@ def register_images(images, options=None):
     """独立配准图像，返回 images、crop、transforms 字典，不执行融合。
 
     输入图像格式、精度、值域及只读切片约定与 fuse 相同；options 使用独立的
-    RegistrationOptions，None 表示创建默认配置，默认 method=Alignment.NONE。
+    RegistrationOptions，None 表示创建默认配置，默认 method=RegistrationMethod.NONE。
     NONE 仍返回独立图像副本，各输出互不共享可写存储，便于继续修改或重复融合。
 
-    method: TRANSLATION/AFFINE 使用 ECC 估计平移/仿射；FEATURE_HOMOGRAPHY
-        使用 SIFT 与 RANSAC；ECC_HOMOGRAPHY 适合初始偏差较小的透视变化。
+    method: RegistrationMethod.NONE 跳过配准；ECC 根据灰度相关性估计变换；
+        SIFT 使用特征匹配与 RANSAC，固定求解单应性。
+    motion_model: 仅 ECC 使用，MotionModel.TRANSLATION/AFFINE/HOMOGRAPHY
+        分别表示平移/仿射/单应性，默认 TRANSLATION；ECC 单应性适合较小的初始偏差。
+        SIFT 和 NONE 忽略此字段的合法值，但所有方法都会拒绝非法枚举值。
     iterations、epsilon: ECC 迭代上限和收敛阈值，默认 150 和 1e-5。
     max_size: 估计变换的最长边上限，默认 1200；最终在原分辨率重采样。
     max_features: SIFT 特征上限，[64, 100000]，默认 4000。
@@ -92,7 +96,8 @@ def register_images(images, options=None):
     images: 与输入顺序一致的配准图像列表，保留原始精度和通道，裁剪为共同区域。
     crop: 第一张原始输入坐标系中的 (x, y, width, height)。
     transforms: 每张输入对应一个 float32 矩阵，方向为参考图坐标到该源图坐标。
-        NONE/TRANSLATION/AFFINE 为 2×3，单应性为 3×3。第一张对应单位变换。
+        NONE 为 2×3 单位变换；ECC 平移/仿射为 2×3，ECC 单应性与 SIFT 为 3×3。
+        第一张始终对应所用矩阵尺寸的单位变换。
         输出像素 (u, v) 先构造 p=[u+crop[0], v+crop[1], 1]。2×3 直接计算
         q=M@p；3×3 计算 q=H@p 后除以第三项，源坐标为 (q[0]/q[2], q[1]/q[2])。
         矩阵不包含裁剪偏移，使用齐次除法前应检查 q[2] 非零。
