@@ -2,20 +2,18 @@
 #include "ui_main_window.h"
 #include "image_io.hpp"
 #include "widgets/image_view.hpp"
+#include "widgets/fusion_settings.hpp"
 #include "widgets/registration_settings.hpp"
 #include "workers/fusion_worker.hpp"
 #include <mif/fusion_options.hpp>
 #include <mif/registration_options.hpp>
 #include <QCloseEvent>
 #include <QCollator>
-#include <QComboBox>
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontMetrics>
-#include <QFormLayout>
-#include <QGroupBox>
 #include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
@@ -25,7 +23,6 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QScrollArea>
-#include <QSpinBox>
 #include <QSplitter>
 #include <QTabBar>
 #include <QTabWidget>
@@ -112,49 +109,8 @@ void MainWindow::createSidebar() {
     registration_parameters_ = new RegistrationSettings;
     addPage(registration_parameters_, QStringLiteral("配准"));
 
-    // 融合设置独立于配准选项；两组配置分别保存，只由一键处理流程串联执行。
-    fusion_parameters_ = new QGroupBox;
-    fusion_parameters_->setObjectName("fusionSettings");
-    auto* form = new QFormLayout(fusion_parameters_);
-    form->setContentsMargins(12, 14, 12, 14);
-    form->setVerticalSpacing(12);
-    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-    form->setAlignment(Qt::AlignTop);
-    auto* fusion_note = new QLabel(QStringLiteral("合成各张图像中的清晰区域。已对齐的图片可以直接融合。"));
-    fusion_note->setObjectName("parameterHint");
-    fusion_note->setWordWrap(true);
-    form->addRow(fusion_note);
-    method_ = new QComboBox;
-    method_->setObjectName("fusionMethod");
-    method_->addItem(QStringLiteral("引导滤波"), static_cast<int>(FusionMethod::GuidedFilter));
-    method_->addItem(QStringLiteral("拉普拉斯金字塔"), static_cast<int>(FusionMethod::LaplacianPyramid));
-    focus_ = new QComboBox;
-    focus_->addItem(QStringLiteral("改进拉普拉斯"), static_cast<int>(FocusMeasure::ModifiedLaplacian));
-    focus_->addItem(QStringLiteral("Tenengrad 梯度"), static_cast<int>(FocusMeasure::Tenengrad));
-    window_ = new QSpinBox; window_->setRange(1, 99); window_->setSingleStep(2); window_->setValue(9);
-    window_->setToolTip(QStringLiteral("清晰度统计窗口，必须为奇数。增大可抑制噪声，但可能损失细小结构。"));
-    radius_ = new QSpinBox; radius_->setRange(1, 64); radius_->setValue(3);
-    levels_ = new QSpinBox; levels_->setRange(1, 10); levels_->setValue(5);
-    QWidget* fusion_controls[] = {method_, focus_, window_, radius_, levels_};
-    for (auto* control : fusion_controls)
-        control->installEventFilter(this);
-    form->addRow(QStringLiteral("融合方法"), method_);
-    form->addRow(QStringLiteral("清晰度"), focus_);
-    form->addRow(QStringLiteral("统计窗口"), window_);
-    form->addRow(QStringLiteral("细节半径"), radius_);
-    form->addRow(QStringLiteral("金字塔层数"), levels_);
-    levels_->setToolTip(QStringLiteral("仅拉普拉斯金字塔融合使用；实际层数还受图像尺寸限制。"));
-    auto* reset_fusion = new QPushButton(QStringLiteral("恢复融合默认值"));
-    reset_fusion->setObjectName("resetFusionOptions");
-    form->addRow(reset_fusion);
-    connect(reset_fusion, &QPushButton::clicked, this, [this] {
-        const FusionOptions defaults;
-        method_->setCurrentIndex(method_->findData(static_cast<int>(defaults.method)));
-        focus_->setCurrentIndex(focus_->findData(static_cast<int>(defaults.focus_measure)));
-        window_->setValue(defaults.focus_window);
-        radius_->setValue(defaults.detail_radius);
-        levels_->setValue(defaults.pyramid_levels);
-    });
+    // 各融合方法的字段由独立组件管理，主窗口只负责收集快照并串联处理流程。
+    fusion_parameters_ = new FusionSettings;
     addPage(fusion_parameters_, QStringLiteral("融合"));
     side->addWidget(tabs, 4);
     run_ = new QPushButton(QStringLiteral("开始融合"));
@@ -236,7 +192,6 @@ void MainWindow::connectActions() {
     });
     connect(files_, &QListWidget::currentRowChanged, this, [this] { previewSelected(); });
     connect(files_, &QListWidget::itemSelectionChanged, this, &MainWindow::updateControls);
-    connect(method_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::updateControls);
     connect(run_, &QPushButton::clicked, this, &MainWindow::startFusion);
     connect(save_, &QPushButton::clicked, this, &MainWindow::exportResult);
 }
@@ -244,15 +199,6 @@ void MainWindow::connectActions() {
 MainWindow::~MainWindow() {
     // 常规关闭由 closeEvent 异步等待；这里保证程序直接析构窗口时也能安全退出。
     if (worker_) { worker_->requestInterruption(); worker_->wait(); }
-}
-
-bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
-    if (event->type() == QEvent::Wheel) {
-        // 保持 ignored，使外层滚动区继续接收滚轮；数值仍可键入或通过箭头调整。
-        event->ignore();
-        return true;
-    }
-    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::addPaths(const QStringList& paths) {
@@ -340,7 +286,6 @@ void MainWindow::updateControls() {
     clear_->setEnabled(!busy && files_->count() > 0);
     registration_parameters_->setEnabled(!busy);
     fusion_parameters_->setEnabled(!busy);
-    levels_->setEnabled(method_->currentData().toInt() == static_cast<int>(FusionMethod::LaplacianPyramid));
     run_->setEnabled(busy || files_->count() >= 2);
     run_->setText(busy ? QStringLiteral("取消处理") : QStringLiteral("开始融合"));
     save_->setEnabled(!busy && !result_.empty());
@@ -354,17 +299,9 @@ void MainWindow::startFusion() {
         status_->setText(QStringLiteral("正在取消，将在当前处理步骤结束后停止…")); return;
     }
     if (files_->count() < 2) return;
-    if (window_->value() % 2 == 0) {
-        status_->setText(QStringLiteral("统计窗口必须为奇数，例如 7、9 或 11。")); return;
-    }
     // 配准和融合分别建立参数快照，后台线程只接收值，不读取界面控件。
     const RegistrationOptions registration_options = registration_parameters_->options();
-    FusionOptions fusion_options;
-    // 从条目数据读取枚举，不将下拉框位置当作模式值；新增或重排选项不会改变含义。
-    fusion_options.method = static_cast<FusionMethod>(method_->currentData().toInt());
-    fusion_options.focus_measure = static_cast<FocusMeasure>(focus_->currentData().toInt());
-    fusion_options.focus_window = window_->value(); fusion_options.detail_radius = radius_->value();
-    fusion_options.pyramid_levels = levels_->value();
+    const FusionOptions fusion_options = fusion_parameters_->options();
     QStringList paths;
     for (int i = 0; i < files_->count(); ++i) paths.push_back(files_->item(i)->data(Qt::UserRole).toString());
     clearResult();

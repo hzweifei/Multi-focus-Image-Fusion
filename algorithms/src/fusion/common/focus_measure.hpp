@@ -1,11 +1,16 @@
 #pragma once
 
-#include <mif/fusion.hpp>
+#include <mif/fusion/focus_options.hpp>
+#include <mif/progress.hpp>
+#include <opencv2/core.hpp>
 #include <vector>
 
 namespace mif::detail::fusion {
 
-/// 两种融合方法共用的灰度引导图和初始清晰度决策图，顺序与输入图像一致。
+/// 校验清晰度枚举及窗口范围；方法自行决定是否使用本工具，无效值抛 invalid_argument。
+void validateFocusOptions(const FocusOptions& options);
+
+/// GFF 与拉普拉斯金字塔共用的灰度引导图和初始决策图，顺序与输入图像一致。
 /// 灰度引导图为 CV_32FC1；灰度输入时可能共享输入缓冲区，只能只读使用。
 /// 决策图为同尺寸 CV_32FC1，各输入在同一像素处的权重和约为 1。
 struct FocusMaps {
@@ -22,7 +27,7 @@ cv::Mat focusMeasure(const cv::Mat& gray, FocusMeasure method, int window);
 /// images 至少含两张同尺寸 CV_32F 灰度或 BGR 图像，值域为 [0, 1]，options 已校验。
 /// 进度在调用线程同步报告，不修改输入；取消及算法异常直接向上传播。
 FocusMaps prepareFocusMaps(const std::vector<cv::Mat>& images,
-                           const FusionOptions& options, const ProgressCallback& progress);
+                           const FocusOptions& options, const ProgressCallback& progress);
 
 } // 命名空间 mif::detail::fusion
 

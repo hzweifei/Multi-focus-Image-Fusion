@@ -172,3 +172,82 @@ Qt 6、Linux 和 macOS 暂未实际编译验证。
 - 使用交付运行库和 Windows 平台插件运行桌面流程通过；已检查 ECC 模型选择、SIFT
   参数页和小窗口布局。截图保存在 `outputs/method-model-settings.png` 及同名的
   `_ecc`、`_sift`、`_fusion`、`_small` 版本。
+
+## 融合方法独立目录与参数验证（2026-09-29）
+
+双尺度引导滤波和拉普拉斯金字塔分别拥有实现目录、公开参数头、校验函数和诊断生成过程。
+`FusionOptions` 持有两组独立配置，仅选中的方法参与校验；公共入口不强制方法使用
+清晰度或引导权重。扩展步骤见 [融合扩展方式](architecture.md#融合扩展方式)。
+
+- Release 完整构建通过，CTest 16/16 通过；新增 `core.method_options`，检查默认值、
+  配置隔离、非默认参数生效、未选中的无效配置不影响结果，以及切换后在计算前拒绝。
+  两方法各字段的范围、非法枚举、非有限正则项、进度与取消均有回归检查。
+- 与调整前的 192 组结果比较，图像、来源索引、细节权重共 576 个数组逐元素一致。
+  覆盖两方法、两种清晰度指标、默认及非默认参数、三种位深、灰度/BGR、小图、奇偶尺寸，
+  以及单层和超过图像尺寸允许值的金字塔层数。脚本和基线保存在本地
+  `build/check_fusion_methods.py`、`build/fusion-methods-baseline.npz`。
+- 组合流程使用两组不同的非默认融合设置，验证在关闭、ECC 三模型和 SIFT 配准路径上，
+  与显式两步的图像及所有诊断结果完全一致。
+- Qt 检查两套表单的显隐、独立存值、切换保留、仅当前方法恢复默认、滚轮保护和小窗口滚动。
+  方法与清晰度条目重排后，实际融合结果仍与对应核心配置一致；运行时全部字段被锁定。
+- 使用交付运行库和 Windows 平台插件，加载真实样式的桌面流程通过。已检查双尺度参数页、
+  滚到底部的参数与恢复按钮、金字塔参数页截图，保存在 `outputs/fusion-methods-settings.png`
+  的 `_fusion_guided`、`_fusion_guided_bottom`、`_fusion_pyramid` 版本。
+- Python wheel 已重新构建并安装至 `build/fusion-methods-wheel-smoke/`。清除开发依赖 PATH
+  且不设置额外 DLL 路径后，19 项 Python 测试全部通过，包含嵌套对象编辑、值复制、
+  父变量删除后的子对象生命周期，以及所选配置的计算和校验行为。
+- 外部 SDK 工程使用交付头文件、导入库与运行库编译、链接和运行通过；实际调用两种融合方法
+  的新嵌套配置及 ECC 三模型。Qt、Python 包、wheel、SDK 和示例已更新至 `outputs/Release/`。
+
+## 官方引导滤波与五种传统融合方法（2026-09-29）
+
+引导滤波已改为 OpenCV 4.12.0 `ximgproc` 的官方完整分辨率实现。新增 DCT 块方差、
+DTCWT 双树复小波和 GFG-FGF，连同 GFF 与拉普拉斯金字塔共五种方法。每种方法有
+独立目录、配置、校验及 Qt 参数表单，C++、Python、组合流程均可调用。
+
+### 正确性与交付
+
+- Release 完整构建通过；CTest **22/22** 通过。新增 DCT、GFG-FGF、DTCWT 变换、
+  DTCWT 融合、DTCWT 参数和引导滤波数值边界用例。日志为
+  `build/traditional-fusion-build-final.log` 与 `build/traditional-fusion-tests.log`。
+- DCT/GFG-FGF 验证灰度/BGR、8/16/float32、平坦与恒等输入、互补清晰质量、奇数边缘、
+  257 帧 int32 索引、参数校验、取消和异常传播；GFG-FGF 额外检查筛帧后原始索引和零权占位。
+- DTCWT 用六种方向纹理验证六个复子带的选择性；32 组独立引擎往返测试覆盖极小、
+  窄图和奇偶尺寸、1/2/4/16 层请求，最大误差约 `5.6e-16`。集成测试另覆盖 16 位低位信息、
+  两帧及三帧互补清晰区域、低频全栈均值、进度取消，以及空空间诊断的约定。
+- 与 Python dtcwt 0.14.0 的 `near_sym_a/qshift_a` 对照：128×192 四层、24 个复方向子带
+  最大绝对差 `2.17e-15`，低频最大差 `3.56e-15`；129×193 两帧融合转换为 float32 后
+  与参考逐元素相同。参考样本与记录在 `build/dtcwt-smoke/verification.json`，数学和
+  系数出处见 [滤波器说明](../algorithms/src/fusion/dtcwt/FILTERS.md)。参考 Python 包不随产品交付。
+- 官方 float32 引导滤波在平坦输入、`epsilon<=1e-8` 时可产生 NaN，权重裁剪不能修复。
+  核心统一要求引导正则项位于 `[1e-6, FLT_MAX]`，Qt 范围为 `[1e-6, 1]`；默认值不变。
+  测试覆盖常量、近常量、局部平坦、小图及半径 1/3/15/255，检查有限输出与归一化权重。
+  此限制不应用于 ECC。开发探针保存于 `build/guided-filter-edge-cases/`。
+- Qt 检查五表单独立存值、显隐、只重置当前方法、条目重排后的实际传参、滚轮和奇数窗口保护，
+  并检查三种引导滤波方法在最小正则项下的浮点平坦图输出。Windows 平台插件运行通过，
+  新参数页截图已目视检查：`outputs/traditional-fusion-settings_fusion_dct.png`、
+  `_fusion_dtcwt.png`、`_fusion_gfgfgf.png`。较长表单通过滚动查看。
+- 新 wheel 安装到 `build/traditional-fusion-wheel-smoke/` 后，清除开发依赖 PATH 和额外
+  DLL 搜索路径，**22 项 Python 测试通过**。包含五方法精度与所有权、新配置值复制与生命周期、
+  未选中参数隔离、组合流程、DTCWT 的 `None`/`[]` 以及正则项边界。
+- 外部 C++ SDK 工程重新编译、链接、运行成功，实际调用五种方法和 ECC 三个模型。
+  Qt、Python 包与 wheel、SDK、示例均更新至 `outputs/Release/`，三类主要交付目录均含
+  `opencv_ximgproc4.dll`。五方法合成示例生成在 `outputs/traditional-fusion-demo/`。
+
+### 引导滤波耗时
+
+使用同一 Release 程序比较旧手写实现与官方实现，保留相同的 `[0,1]` 权重裁剪。
+输入为固定随机种子的 float32 灰度引导图和二值权重，测试前预热三次，交替运行两种实现，
+各记录 11 次并取中位数；半径 3/15 对应正则项 0.0001/0.01。记录位于
+`build/guided-filter-benchmark/results.csv`，本机 OpenCV 4.12.0、MSVC Release。
+
+| OpenCV 线程设置 | 图像大小 | 半径 | 旧实现 | 官方实现 | 旧耗时 / 新耗时 |
+|---|---|---|---|---|---|
+| 1 | 512×512 | 3 | 5.71 ms | 3.57 ms | 1.60 |
+| 1 | 1920×1080 | 15 | 48.37 ms | 31.42 ms | 1.54 |
+| 8 | 1920×1080 | 3 | 45.81 ms | 26.46 ms | 1.73 |
+| 8 | 1920×1080 | 15 | 47.56 ms | 27.41 ms | 1.73 |
+
+全部八组设置下，单独滤波环节约快 1.4–1.7 倍；这是本机微基准，不能作为完整融合或
+其他设备的固定提速比例。官方 `BORDER_REFLECT` 与旧 `BORDER_REFLECT_101` 在边缘处
+会产生数值差异；融合质量与精度通过上述测试验证，不宣称与旧结果逐像素一致。

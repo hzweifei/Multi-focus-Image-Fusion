@@ -32,6 +32,32 @@ int main() {
             cv::norm(aligned.images[1], texture(aligned.crop), cv::NORM_INF) > 1)
             return 3;
     }
+    // 五种嵌套配置分别穿过 DLL 边界；保留诊断可检查新增字段后的结构布局。
+    mif::FusionOptions fusion;
+    fusion.keep_weight_maps = true;
+    fusion.guided_filter.focus = {mif::FocusMeasure::Tenengrad, 5};
+    fusion.guided_filter.base_radius = 7;
+    fusion.guided_filter.detail_radius = 2;
+    fusion.guided_filter.base_epsilon = 0.02;
+    fusion.laplacian_pyramid.focus.window = 7;
+    fusion.laplacian_pyramid.detail_epsilon = 0.0003;
+    fusion.laplacian_pyramid.levels = 3;
+    fusion.dct.block_size = 4;
+    fusion.dct.consistency_window = 3;
+    fusion.dtcwt.levels = 3;
+    fusion.dtcwt.activity_window = 3;
+    fusion.gfgfgf.selection_ratio = 0;
+    fusion.gfgfgf.guided_radius = 3;
+    for (const auto method : {mif::FusionMethod::GuidedFilter, mif::FusionMethod::LaplacianPyramid,
+                              mif::FusionMethod::Dct, mif::FusionMethod::Dtcwt, mif::FusionMethod::Gfgfgf}) {
+        fusion.method = method;
+        const auto fused = mif::fuse({texture, texture}, fusion);
+        const bool diagnostics_ok = method == mif::FusionMethod::Dtcwt
+            ? fused.weights.empty() && fused.focus_indices.empty()
+            : fused.weights.size() == 2 && fused.focus_indices.type() == CV_32SC1;
+        if (!diagnostics_ok || cv::norm(fused.image, texture, cv::NORM_INF) > 1)
+            return 4;
+    }
     std::cout << "Installed SDK: headers, import library and runtime OK\n";
     return 0;
 }

@@ -1,8 +1,10 @@
-#include "fusion/fusion.hpp"
-#include "fusion/focus_measure.hpp"
-#include "fusion/weight_map.hpp"
+#include "fusion/guided_filter/guided_filter.hpp"
+#include "fusion/common/focus_measure.hpp"
+#include "fusion/common/guided_filter.hpp"
+#include "fusion/common/weight_map.hpp"
 #include "common/progress.hpp"
 #include <opencv2/imgproc.hpp>
+#include <stdexcept>
 #include <utility>
 
 namespace mif::detail::fusion {
@@ -29,9 +31,18 @@ cv::Mat blendGuided(const std::vector<cv::Mat>& images,
 
 } // 匿名命名空间
 
+void validateGuidedFilterOptions(const GuidedFilterOptions& options) {
+    validateFocusOptions(options.focus);
+    if (options.base_radius < 1 || options.base_radius > 255 ||
+        options.detail_radius < 1 || options.detail_radius > 255)
+        throw std::invalid_argument("Invalid guided-filter options; check radii");
+    validateGuidedEpsilon(options.base_epsilon);
+    validateGuidedEpsilon(options.detail_epsilon);
+}
+
 MethodResult guidedFilterFusion(const std::vector<cv::Mat>& images,
-                                const FusionOptions& options, const ProgressCallback& progress) {
-    auto maps = prepareFocusMaps(images, options, progress);
+                                const GuidedFilterOptions& options, const ProgressCallback& progress) {
+    auto maps = prepareFocusMaps(images, options.focus, progress);
     std::vector<cv::Mat> base_weights, detail_weights;
     for (size_t i = 0; i < images.size(); ++i) {
         report(progress, 50 + static_cast<int>(20 * i / images.size()), "weights");
@@ -48,6 +59,8 @@ MethodResult guidedFilterFusion(const std::vector<cv::Mat>& images,
     normalizeWeights(base_weights);
     MethodResult result;
     result.image = blendGuided(images, base_weights, detail_weights, options.base_radius, progress);
+    // 来源图描述细节权重的主导输入，不把基础层和细节层简化成一张实际像素贡献图。
+    result.focus_indices = dominantIndices(detail_weights);
     result.weights = std::move(detail_weights);
     return result;
 }

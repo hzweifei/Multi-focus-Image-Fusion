@@ -18,6 +18,9 @@ if os.name == "nt":
 import numpy as np
 import mif
 
+ALL_METHODS = (mif.FusionMethod.GUIDED_FILTER, mif.FusionMethod.LAPLACIAN_PYRAMID,
+               mif.FusionMethod.DCT, mif.FusionMethod.DTCWT, mif.FusionMethod.GFGFGF)
+
 
 def alignment_texture():
     """只用 NumPy 生成可复现的纹理和几何图案，测试不额外依赖 Python OpenCV。"""
@@ -50,7 +53,7 @@ class FusionTests(unittest.TestCase):
                 image = np.random.default_rng(42).random(shape).astype(np.float32)
                 if dtype != np.float32:
                     image = (image * np.iinfo(dtype).max).astype(dtype)
-                for method in (mif.FusionMethod.GUIDED_FILTER, mif.FusionMethod.LAPLACIAN_PYRAMID):
+                for method in ALL_METHODS:
                     options = mif.FusionOptions()
                     options.method = method
                     original = image.copy()
@@ -68,6 +71,76 @@ class FusionTests(unittest.TestCase):
         image.flags.writeable = False
         np.testing.assert_allclose(mif.fuse([image, image]), image, atol=1, rtol=0)
 
+    def test_new_method_options_and_lifetime(self):
+        """新增嵌套配置以值复制赋值，借用成员保留父对象，错误参数正确转为 ValueError。"""
+        cases = ((mif.FusionMethod.DCT, "dct", mif.DctOptions, "block_size", 8, 4, 1),
+                 (mif.FusionMethod.DTCWT, "dtcwt", mif.DtcwtOptions, "levels", 4, 2, 0),
+                 (mif.FusionMethod.GFGFGF, "gfgfgf", mif.GfgfgfOptions, "guided_radius", 5, 3, 0))
+        image = np.arange(21 * 31, dtype=np.uint16).reshape(21, 31) * 53
+        for method, field, option_type, attribute, default, changed, invalid in cases:
+            with self.subTest(method=method):
+                options = mif.FusionOptions()
+                member = getattr(options, field)
+                self.assertEqual(getattr(member, attribute), default)
+                source = option_type()
+                setattr(source, attribute, changed)
+                setattr(options, field, source)
+                setattr(source, attribute, default)
+                self.assertEqual(getattr(member, attribute), changed)
+                setattr(member, attribute, invalid)
+                # 未选中的非法设置不妨碍默认 GFF；切换选中后须拒绝。
+                np.testing.assert_allclose(mif.fuse([image, image], options), image, atol=1, rtol=0)
+                options.method = method
+                with self.assertRaises(ValueError):
+                    mif.fuse([image, image], options)
+                del options
+                gc.collect()
+                setattr(member, attribute, changed)
+                self.assertEqual(getattr(member, attribute), changed)
+
+    def test_all_method_diagnostics_and_pipeline(self):
+        """五种方法都能经过独立入口与组合入口；DTCWT 明确返回空诊断。"""
+        images = [np.full((23, 35), value, np.uint16) for value in (10000, 50000)]
+        for method in ALL_METHODS:
+            with self.subTest(method=method):
+                options = mif.FusionOptions()
+                options.method = method
+                options.keep_weight_maps = True
+                direct = mif.fuse_detailed(images, options)
+                combined = mif.register_and_fuse(images, fusion_options=options)
+                gc.collect()
+                np.testing.assert_allclose(direct["image"], 30000, atol=1, rtol=0)
+                np.testing.assert_array_equal(combined["image"], direct["image"])
+                self.assertEqual(combined["crop"], (0, 0, 35, 23))
+                if method == mif.FusionMethod.DTCWT:
+                    self.assertIsNone(direct["focus_indices"])
+                    self.assertIsNone(combined["focus_indices"])
+                    self.assertEqual(direct["weights"], [])
+                else:
+                    self.assertEqual(direct["focus_indices"].dtype, np.int32)
+                    self.assertEqual(direct["focus_indices"].shape, images[0].shape)
+                    self.assertEqual(len(direct["weights"]), len(images))
+                    np.testing.assert_allclose(sum(direct["weights"]), 1, atol=1e-6)
+                    for weight in direct["weights"]:
+                        self.assertTrue(np.isfinite(weight).all() and (weight >= 0).all())
+
+    def test_guided_epsilon_numerical_range(self):
+        """官方 float32 实现的正则项上下限应通过 Python 异常和最小值结果可见。"""
+        image = np.full((25, 37), 0.5, np.float32)
+        for method, field, attribute in (
+                (mif.FusionMethod.GUIDED_FILTER, "guided_filter", "base_epsilon"),
+                (mif.FusionMethod.GUIDED_FILTER, "guided_filter", "detail_epsilon"),
+                (mif.FusionMethod.LAPLACIAN_PYRAMID, "laplacian_pyramid", "detail_epsilon"),
+                (mif.FusionMethod.GFGFGF, "gfgfgf", "guided_epsilon")):
+            options = mif.FusionOptions()
+            options.method = method
+            for value in (1e-100, 1e-8, 1e100):
+                setattr(getattr(options, field), attribute, value)
+                with self.assertRaises(ValueError):
+                    mif.fuse([image, image], options)
+            setattr(getattr(options, field), attribute, 1e-6)
+            np.testing.assert_allclose(mif.fuse([image, image], options), image, atol=2e-5, rtol=0)
+
     def test_diagnostics(self):
         """检查诊断结果字段、索引精度和归一化权重；无纹理平局应等权平均。"""
         options = mif.FusionOptions()
@@ -78,6 +151,150 @@ class FusionTests(unittest.TestCase):
         self.assertEqual(result["focus_indices"].dtype, np.int32)
         np.testing.assert_allclose(sum(result["weights"]), 1, atol=1e-6)
         np.testing.assert_allclose(result["image"], 30000, atol=1)
+
+    def test_fusion_option_defaults_and_isolation(self):
+        """方法各自拥有默认配置；修改与切换不会把清晰度或滤波参数串到另一方法。"""
+        options = mif.FusionOptions()
+        self.assertEqual(options.method, mif.FusionMethod.GUIDED_FILTER)
+        self.assertFalse(options.keep_weight_maps)
+        for config in (mif.GuidedFilterOptions(), mif.LaplacianPyramidOptions(),
+                       options.guided_filter, options.laplacian_pyramid):
+            self.assertEqual(config.focus.measure, mif.FocusMeasure.MODIFIED_LAPLACIAN)
+            self.assertEqual(config.focus.window, 9)
+            self.assertEqual(config.detail_radius, 3)
+            self.assertEqual(config.detail_epsilon, 0.0001)
+        self.assertEqual(mif.FocusOptions().window, 9)
+        self.assertEqual(options.guided_filter.base_radius, 15)
+        self.assertEqual(options.guided_filter.base_epsilon, 0.01)
+        self.assertEqual(options.laplacian_pyramid.levels, 5)
+        self.assertFalse(hasattr(options.laplacian_pyramid, "base_radius"))
+        self.assertFalse(hasattr(options.guided_filter, "levels"))
+        for old_field in ("focus_measure", "focus_window", "base_radius", "detail_radius",
+                          "base_epsilon", "detail_epsilon", "pyramid_levels"):
+            self.assertFalse(hasattr(options, old_field))
+            with self.assertRaises(AttributeError):
+                setattr(options, old_field, 1)
+        with self.assertRaises(TypeError):
+            options.guided_filter = mif.LaplacianPyramidOptions()
+        with self.assertRaises(TypeError):
+            options.laplacian_pyramid.focus = mif.GuidedFilterOptions()
+
+        options.guided_filter.focus.window = 7
+        options.guided_filter.focus.measure = mif.FocusMeasure.TENENGRAD
+        options.guided_filter.detail_radius = 4
+        options.method = mif.FusionMethod.LAPLACIAN_PYRAMID
+        self.assertEqual(options.laplacian_pyramid.focus.window, 9)
+        self.assertEqual(options.laplacian_pyramid.focus.measure, mif.FocusMeasure.MODIFIED_LAPLACIAN)
+        self.assertEqual(options.laplacian_pyramid.detail_radius, 3)
+        options.laplacian_pyramid.focus.window = 11
+        options.laplacian_pyramid.detail_radius = 6
+        options.method = mif.FusionMethod.GUIDED_FILTER
+        self.assertEqual(options.guided_filter.focus.window, 7)
+        self.assertEqual(options.guided_filter.focus.measure, mif.FocusMeasure.TENENGRAD)
+        self.assertEqual(options.guided_filter.detail_radius, 4)
+        self.assertEqual(mif.FusionOptions().guided_filter.focus.window, 9)
+
+    def test_nested_option_value_assignment_and_lifetime(self):
+        """嵌套读取是内部引用，整体赋值复制数值，子对象能保留父配置的生命周期。"""
+        for field, option_type in (("guided_filter", mif.GuidedFilterOptions),
+                                   ("laplacian_pyramid", mif.LaplacianPyramidOptions)):
+            with self.subTest(field=field):
+                options = mif.FusionOptions()
+                nested = getattr(options, field)
+                focus = nested.focus
+                replacement = option_type()
+                replacement.focus.window = 5
+                replacement.detail_radius = 7
+                setattr(options, field, replacement)
+                # 替换写入原结构体，已取得的子/孙对象引用仍指向同一个内部成员。
+                self.assertEqual(nested.detail_radius, 7)
+                self.assertEqual(focus.window, 5)
+                replacement.focus.window = 13
+                replacement.detail_radius = 9
+                self.assertEqual(getattr(options, field).focus.window, 5)
+                self.assertEqual(nested.detail_radius, 7)
+                nested.detail_radius = 4
+                self.assertEqual(getattr(options, field).detail_radius, 4)
+                self.assertEqual(replacement.detail_radius, 9)
+
+                source_focus = mif.FocusOptions()
+                source_focus.window = 11
+                nested.focus = source_focus
+                source_focus.window = 15
+                self.assertEqual(focus.window, 11)
+                del options, replacement, source_focus
+                gc.collect()
+                nested.detail_radius = 6
+                self.assertEqual(nested.detail_radius, 6)
+                del nested
+                gc.collect()
+                # 此时仅保留孙对象；修改和再次复制仍应安全，不能访问已经释放的父存储。
+                focus.window = 7
+                retained = option_type()
+                retained.focus = focus
+                focus.window = 3
+                self.assertEqual(retained.focus.window, 7)
+                self.assertEqual(focus.window, 3)
+
+    def test_nested_fusion_settings_affect_results(self):
+        """通过真实融合确认嵌套编辑进入计算，而不是只改变 Python 返回的临时副本。"""
+        random = np.random.default_rng(54)
+        images = [random.random((53, 71), dtype=np.float32) for _ in range(2)]
+        for method, field in ((mif.FusionMethod.GUIDED_FILTER, "guided_filter"),
+                              (mif.FusionMethod.LAPLACIAN_PYRAMID, "laplacian_pyramid")):
+            with self.subTest(method=method):
+                options = mif.FusionOptions()
+                options.method = method
+                baseline = mif.fuse_detailed(images, options)
+                config = getattr(options, field)
+                config.focus.measure = mif.FocusMeasure.TENENGRAD
+                config.focus.window = 1
+                config.detail_radius = 5
+                config.detail_epsilon = 0.02
+                if method == mif.FusionMethod.GUIDED_FILTER:
+                    config.base_radius = 7
+                    config.base_epsilon = 0.03
+                else:
+                    config.levels = 2
+                changed = mif.fuse_detailed(images, options)
+                self.assertTrue(np.any(changed["focus_indices"] != baseline["focus_indices"]))
+                self.assertGreater(float(np.max(np.abs(changed["image"] - baseline["image"]))), 1e-5)
+
+                # 将完整配置复制到另一个顶层对象，结果应与逐项修改的配置一致。
+                copied = mif.FusionOptions()
+                copied.method = method
+                setattr(copied, field, config)
+                np.testing.assert_array_equal(mif.fuse(images, copied), changed["image"])
+
+    def test_only_selected_fusion_configuration_is_validated(self):
+        """未选中方法的非法值不参与计算；切换到该方法后，纯融合和组合入口都拒绝。"""
+        random = np.random.default_rng(61)
+        images = [random.random((29, 37), dtype=np.float32) for _ in range(2)]
+        for active, inactive, invalid_field in (
+                (mif.FusionMethod.GUIDED_FILTER, mif.FusionMethod.LAPLACIAN_PYRAMID, "laplacian_pyramid"),
+                (mif.FusionMethod.LAPLACIAN_PYRAMID, mif.FusionMethod.GUIDED_FILTER, "guided_filter")):
+            with self.subTest(active=active):
+                options = mif.FusionOptions()
+                options.method = active
+                expected = mif.fuse(images, options)
+                invalid = getattr(options, invalid_field)
+                invalid.focus.window = 2
+                invalid.detail_radius = 0
+                invalid.detail_epsilon = np.nan
+                if invalid_field == "guided_filter":
+                    invalid.base_radius = 0
+                    invalid.base_epsilon = np.nan
+                else:
+                    invalid.levels = 0
+                np.testing.assert_array_equal(mif.fuse(images, options), expected)
+                np.testing.assert_array_equal(mif.register_and_fuse(images, fusion_options=options)["image"], expected)
+                options.method = inactive
+                with self.assertRaises(ValueError):
+                    mif.fuse(images, options)
+                with self.assertRaises(ValueError):
+                    mif.register_and_fuse(images, fusion_options=options)
+                options.method = active
+                np.testing.assert_array_equal(mif.fuse(images, options), expected)
 
     def test_registration_options(self):
         """配准算法与 ECC 运动模型分开配置，数值参数默认值仍由核心提供。"""
@@ -259,17 +476,21 @@ class FusionTests(unittest.TestCase):
     def test_fusion_validation_does_not_affect_registration(self):
         """融合参数错误只影响融合及组合流程，不参与单独配准的校验。"""
         image = np.full((20, 30), 100, np.uint8)
-        for field, value in (("focus_window", 2), ("base_radius", 0), ("detail_radius", 0),
-                             ("base_epsilon", np.nan), ("detail_epsilon", 0.0), ("pyramid_levels", 0)):
-            with self.subTest(field=field):
-                options = mif.FusionOptions()
-                setattr(options, field, value)
-                with self.assertRaises(ValueError):
-                    mif.fuse([image, image], options)
-                with self.assertRaises(ValueError):
-                    mif.register_and_fuse([image, image], fusion_options=options)
-                registered = mif.register_images([image, image])
-                np.testing.assert_array_equal(registered["images"][0], image)
+        for method, field, specific in (
+                (mif.FusionMethod.GUIDED_FILTER, "guided_filter", (("base_radius", 0), ("base_epsilon", np.nan))),
+                (mif.FusionMethod.LAPLACIAN_PYRAMID, "laplacian_pyramid", (("levels", 0),))):
+            for name, value in (("window", 2), ("detail_radius", 0), ("detail_epsilon", 0.0)) + specific:
+                with self.subTest(method=method, field=name):
+                    options = mif.FusionOptions()
+                    options.method = method
+                    config = getattr(options, field)
+                    setattr(config.focus if name == "window" else config, name, value)
+                    with self.assertRaises(ValueError):
+                        mif.fuse([image, image], options)
+                    with self.assertRaises(ValueError):
+                        mif.register_and_fuse([image, image], fusion_options=options)
+                    registered = mif.register_images([image, image])
+                    np.testing.assert_array_equal(registered["images"][0], image)
 
     def test_registration_image_validation_and_failure(self):
         """独立配准检查输入并暴露求解失败，不因拆分接口而静默接受无效图像。"""
@@ -346,7 +567,7 @@ class FusionTests(unittest.TestCase):
             with self.assertRaises((ValueError, TypeError)):
                 mif.fuse(images)
         options = mif.FusionOptions()
-        options.focus_window = 2
+        options.guided_filter.focus.window = 2
         with self.assertRaises(ValueError):
             mif.fuse([good, good], options)
 

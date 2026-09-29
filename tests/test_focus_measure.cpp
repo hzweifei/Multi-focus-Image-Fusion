@@ -1,5 +1,5 @@
 #include "fixtures.hpp"
-#include "fusion/focus_measure.hpp"
+#include "fusion/common/focus_measure.hpp"
 
 // 相同纹理模糊后，两种清晰度指标的平均响应都应显著下降。
 // 在归一化灰度图上直接检查内部指标，以便将评分问题与后续融合问题区分。

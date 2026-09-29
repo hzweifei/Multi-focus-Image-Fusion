@@ -44,6 +44,16 @@ void testPipeline() {
                 mif::FusionOptions fusion;
                 fusion.method = method;
                 fusion.keep_weight_maps = true;
+                // 两种方法保存不同的非默认参数，组合入口必须传递完整快照。
+                fusion.guided_filter.focus = {mif::FocusMeasure::Tenengrad, 5};
+                fusion.guided_filter.base_radius = 7;
+                fusion.guided_filter.detail_radius = 2;
+                fusion.guided_filter.base_epsilon = 0.025;
+                fusion.guided_filter.detail_epsilon = 0.0004;
+                fusion.laplacian_pyramid.focus = {mif::FocusMeasure::ModifiedLaplacian, 11};
+                fusion.laplacian_pyramid.detail_radius = 4;
+                fusion.laplacian_pyramid.detail_epsilon = 0.0002;
+                fusion.laplacian_pyramid.levels = 3;
                 const auto separate = mif::fuse(registered.images, fusion);
                 int previous = -1, done_count = 0;
                 const auto combined = mif::registerAndFuse(images, registration, fusion,

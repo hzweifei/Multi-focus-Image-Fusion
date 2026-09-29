@@ -5,7 +5,7 @@
 #include <iostream>
 
 // C++ 调用示例：mif_example output.png input1.png input2.png [更多输入...]
-// 也可使用 mif_example --demo 输出目录，生成互补清晰样例及两种方法的融合结果。
+// 也可使用 mif_example --demo 输出目录，生成互补清晰样例及五种方法的融合结果。
 int main(int argc, char** argv) {
     try {
         if (argc == 3 && std::string(argv[1]) == "--demo") {
@@ -27,11 +27,22 @@ int main(int argc, char** argv) {
             cv::imwrite((dir / "focus_01.png").string(), first);
             cv::imwrite((dir / "focus_02.png").string(), second);
             cv::imwrite((dir / "reference.png").string(), sharp);
-            // 两种方法共享同一入口，通过 FusionOptions 切换，便于比较输出效果。
+            // 入口统一，参数分别保存在各方法对象中；切换方法不会覆盖另一套设置。
             auto options = mif::FusionOptions{};
+            options.guided_filter.focus.window = 9;
             cv::imwrite((dir / "fused_guided.png").string(), mif::fuse({first, second}, options).image);
             options.method = mif::FusionMethod::LaplacianPyramid;
+            options.laplacian_pyramid.levels = 5;
             cv::imwrite((dir / "fused_pyramid.png").string(), mif::fuse({first, second}, options).image);
+            options.method = mif::FusionMethod::Dct;
+            options.dct.block_size = 8;
+            cv::imwrite((dir / "fused_dct.png").string(), mif::fuse({first, second}, options).image);
+            options.method = mif::FusionMethod::Dtcwt;
+            options.dtcwt.levels = 4;
+            cv::imwrite((dir / "fused_dtcwt.png").string(), mif::fuse({first, second}, options).image);
+            options.method = mif::FusionMethod::Gfgfgf;
+            options.gfgfgf.selection_ratio = 0.15;
+            cv::imwrite((dir / "fused_gfgfgf.png").string(), mif::fuse({first, second}, options).image);
             std::cout << "Demo written to " << dir << '\n'; return 0;
         }
         if (argc < 4) {

@@ -2,9 +2,11 @@
 #include "main_window.hpp"
 #include "image_io.hpp"
 #include "widgets/image_view.hpp"
+#include "widgets/fusion_settings.hpp"
 #include "widgets/registration_settings.hpp"
 #include "workers/fusion_worker.hpp"
 #include <mif/fusion_options.hpp>
+#include <mif/fusion.hpp>
 #include <mif/pipeline.hpp>
 #include <mif/registration_options.hpp>
 #include <QApplication>
@@ -31,11 +33,18 @@
 #include <QTimer>
 #include <QUrl>
 #include <QWheelEvent>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <iostream>
+#include <vector>
 
 namespace {
+// 所有方法执行相同的配置切换、重置和端到端检查；数据读取始终依据枚举条目值。
+const std::array<mif::FusionMethod, 5> fusionMethods{
+    mif::FusionMethod::GuidedFilter, mif::FusionMethod::LaplacianPyramid,
+    mif::FusionMethod::Dct, mif::FusionMethod::Dtcwt, mif::FusionMethod::Gfgfgf};
+
 // 派发布局请求，确保切换参数页及模式后的可见性、滚动范围已更新。
 void flushLayout() {
     for (int i = 0; i < 3; ++i) {
@@ -133,6 +142,179 @@ struct RegistrationControls {
                 "Registration mode shows unrelated parameters or hides required parameters");
     }
 };
+
+// 五种方法使用独立控件，同时核对选中与未选中的配置，避免切换时被默认值覆盖。
+struct FusionControls {
+    struct MethodFields {
+        QWidget* panel;
+        QComboBox* focus;
+        QSpinBox* window;
+        QSpinBox* radius;
+        QDoubleSpinBox* epsilon;
+    };
+    mif::desktop::FusionSettings* settings;
+    QComboBox* method;
+    MethodFields guided;
+    MethodFields pyramid;
+    QSpinBox* base_radius;
+    QDoubleSpinBox* base_epsilon;
+    QSpinBox* levels;
+    QWidget* dct_panel;
+    QWidget* dtcwt_panel;
+    QWidget* gfgfgf_panel;
+    QSpinBox* dct_block_size;
+    QSpinBox* dct_window;
+    QSpinBox* dtcwt_levels;
+    QSpinBox* dtcwt_window;
+    QSpinBox* gfgfgf_window;
+    QDoubleSpinBox* gfgfgf_selection;
+    QDoubleSpinBox* gfgfgf_threshold;
+    QSpinBox* gfgfgf_radius;
+    QDoubleSpinBox* gfgfgf_epsilon;
+    QPushButton* reset;
+
+    static MethodFields findFields(QWidget& parent, const QString& prefix, const QString& panel_name) {
+        MethodFields result{parent.findChild<QWidget*>(panel_name),
+            parent.findChild<QComboBox*>(prefix + "FocusMeasure"),
+            parent.findChild<QSpinBox*>(prefix + "FocusWindow"),
+            parent.findChild<QSpinBox*>(prefix + "DetailRadius"),
+            parent.findChild<QDoubleSpinBox*>(prefix + "DetailEpsilon")};
+        require(result.panel && result.focus && result.window && result.radius && result.epsilon,
+                "Method-specific fusion fields are missing");
+        return result;
+    }
+
+    explicit FusionControls(mif::desktop::MainWindow& window)
+        : settings(dynamic_cast<mif::desktop::FusionSettings*>(window.findChild<QGroupBox*>("fusionSettings"))),
+          method(window.findChild<QComboBox*>("fusionMethod")),
+          guided(findFields(window, "guided", "guidedFilterFields")),
+          pyramid(findFields(window, "pyramid", "laplacianPyramidFields")),
+          base_radius(window.findChild<QSpinBox*>("guidedBaseRadius")),
+          base_epsilon(window.findChild<QDoubleSpinBox*>("guidedBaseEpsilon")),
+          levels(window.findChild<QSpinBox*>("pyramidLevels")),
+          dct_panel(window.findChild<QWidget*>("dctFields")),
+          dtcwt_panel(window.findChild<QWidget*>("dtcwtFields")),
+          gfgfgf_panel(window.findChild<QWidget*>("gfgfgfFields")),
+          dct_block_size(window.findChild<QSpinBox*>("dctBlockSize")),
+          dct_window(window.findChild<QSpinBox*>("dctConsistencyWindow")),
+          dtcwt_levels(window.findChild<QSpinBox*>("dtcwtLevels")),
+          dtcwt_window(window.findChild<QSpinBox*>("dtcwtActivityWindow")),
+          gfgfgf_window(window.findChild<QSpinBox*>("gfgfgfDifferenceWindow")),
+          gfgfgf_selection(window.findChild<QDoubleSpinBox*>("gfgfgfSelectionRatio")),
+          gfgfgf_threshold(window.findChild<QDoubleSpinBox*>("gfgfgfDifferenceThreshold")),
+          gfgfgf_radius(window.findChild<QSpinBox*>("gfgfgfGuidedRadius")),
+          gfgfgf_epsilon(window.findChild<QDoubleSpinBox*>("gfgfgfGuidedEpsilon")),
+          reset(window.findChild<QPushButton*>("resetFusionOptions")) {
+        require(settings && method && base_radius && base_epsilon && levels && reset,
+                "Fusion settings controls are missing");
+        require(dct_panel && dtcwt_panel && gfgfgf_panel && dct_block_size && dct_window &&
+                dtcwt_levels && dtcwt_window && gfgfgf_window && gfgfgf_selection &&
+                gfgfgf_threshold && gfgfgf_radius && gfgfgf_epsilon,
+                "New fusion method panels or parameters are missing");
+    }
+
+    void selectMethod(mif::FusionMethod value) const {
+        const int index = method->findData(static_cast<int>(value));
+        require(index >= 0, "Fusion method item data is missing");
+        method->setCurrentIndex(index);
+        flushLayout();
+    }
+
+    void setValues(const mif::FusionOptions& options) const {
+        auto setCommon = [](const MethodFields& fields, const mif::FocusOptions& focus, int radius, double epsilon) {
+            fields.focus->setCurrentIndex(fields.focus->findData(static_cast<int>(focus.measure)));
+            fields.window->setValue(focus.window);
+            fields.radius->setValue(radius);
+            fields.epsilon->setValue(epsilon);
+        };
+        const auto& g = options.guided_filter;
+        const auto& p = options.laplacian_pyramid;
+        setCommon(guided, g.focus, g.detail_radius, g.detail_epsilon);
+        base_radius->setValue(g.base_radius);
+        base_epsilon->setValue(g.base_epsilon);
+        setCommon(pyramid, p.focus, p.detail_radius, p.detail_epsilon);
+        levels->setValue(p.levels);
+        dct_block_size->setValue(options.dct.block_size);
+        dct_window->setValue(options.dct.consistency_window);
+        dtcwt_levels->setValue(options.dtcwt.levels);
+        dtcwt_window->setValue(options.dtcwt.activity_window);
+        gfgfgf_window->setValue(options.gfgfgf.difference_window);
+        gfgfgf_selection->setValue(options.gfgfgf.selection_ratio);
+        gfgfgf_threshold->setValue(options.gfgfgf.difference_threshold);
+        gfgfgf_radius->setValue(options.gfgfgf.guided_radius);
+        gfgfgf_epsilon->setValue(options.gfgfgf.guided_epsilon);
+        selectMethod(options.method);
+    }
+
+    void requireValues(const mif::FusionOptions& expected) const {
+        const auto actual = settings->options();
+        auto close = [](double a, double b) { return std::abs(a - b) < 1e-12; };
+        const auto& ag = actual.guided_filter;
+        const auto& eg = expected.guided_filter;
+        const auto& ap = actual.laplacian_pyramid;
+        const auto& ep = expected.laplacian_pyramid;
+        require(actual.method == expected.method && !actual.keep_weight_maps &&
+                ag.focus.measure == eg.focus.measure && ag.focus.window == eg.focus.window &&
+                ag.base_radius == eg.base_radius && close(ag.base_epsilon, eg.base_epsilon) &&
+                ag.detail_radius == eg.detail_radius && close(ag.detail_epsilon, eg.detail_epsilon) &&
+                ap.focus.measure == ep.focus.measure && ap.focus.window == ep.focus.window &&
+                ap.detail_radius == ep.detail_radius && close(ap.detail_epsilon, ep.detail_epsilon) &&
+                ap.levels == ep.levels && actual.dct.block_size == expected.dct.block_size &&
+                actual.dct.consistency_window == expected.dct.consistency_window &&
+                actual.dtcwt.levels == expected.dtcwt.levels &&
+                actual.dtcwt.activity_window == expected.dtcwt.activity_window &&
+                actual.gfgfgf.difference_window == expected.gfgfgf.difference_window &&
+                close(actual.gfgfgf.selection_ratio, expected.gfgfgf.selection_ratio) &&
+                close(actual.gfgfgf.difference_threshold, expected.gfgfgf.difference_threshold) &&
+                actual.gfgfgf.guided_radius == expected.gfgfgf.guided_radius &&
+                close(actual.gfgfgf.guided_epsilon, expected.gfgfgf.guided_epsilon),
+                "Fusion method configurations were mixed, reset or omitted");
+    }
+
+    void requireVisibility(mif::FusionMethod value) const {
+        require(guided.panel->isVisibleTo(settings) == (value == mif::FusionMethod::GuidedFilter) &&
+                pyramid.panel->isVisibleTo(settings) == (value == mif::FusionMethod::LaplacianPyramid) &&
+                dct_panel->isVisibleTo(settings) == (value == mif::FusionMethod::Dct) &&
+                dtcwt_panel->isVisibleTo(settings) == (value == mif::FusionMethod::Dtcwt) &&
+                gfgfgf_panel->isVisibleTo(settings) == (value == mif::FusionMethod::Gfgfgf),
+                "Fusion settings must show only the selected method's fields");
+    }
+
+    std::vector<QWidget*> inputs() const {
+        return {method, guided.focus, guided.window, guided.radius, guided.epsilon, base_radius, base_epsilon,
+                pyramid.focus, pyramid.window, pyramid.radius, pyramid.epsilon, levels,
+                dct_block_size, dct_window, dtcwt_levels, dtcwt_window, gfgfgf_window,
+                gfgfgf_selection, gfgfgf_threshold, gfgfgf_radius, gfgfgf_epsilon};
+    }
+};
+
+// 各方法均使用非默认配置；原有两种方法还采用不同清晰度指标，便于发现配置串用。
+mif::FusionOptions customFusionOptions() {
+    mif::FusionOptions options;
+    auto& guided = options.guided_filter;
+    guided.focus.measure = mif::FocusMeasure::Tenengrad;
+    guided.focus.window = 7;
+    guided.base_radius = 9;
+    guided.base_epsilon = 0.02;
+    guided.detail_radius = 2;
+    guided.detail_epsilon = 0.0003;
+    auto& pyramid = options.laplacian_pyramid;
+    pyramid.focus.measure = mif::FocusMeasure::ModifiedLaplacian;
+    pyramid.focus.window = 13;
+    pyramid.detail_radius = 5;
+    pyramid.detail_epsilon = 0.0008;
+    pyramid.levels = 3;
+    options.dct.block_size = 12;
+    options.dct.consistency_window = 3;
+    options.dtcwt.levels = 3;
+    options.dtcwt.activity_window = 5;
+    options.gfgfgf.difference_window = 9;
+    options.gfgfgf.selection_ratio = 0.22;
+    options.gfgfgf.difference_threshold = 0.012;
+    options.gfgfgf.guided_radius = 4;
+    options.gfgfgf.guided_epsilon = 0.2;
+    return options;
+}
 
 // 所有字段都偏离默认值，最长边还会触发缩小，真实计算可发现主窗口漏传参数。
 mif::RegistrationOptions customRegistrationOptions(mif::RegistrationMethod method, mif::MotionModel model) {
@@ -438,6 +620,199 @@ void verifyRegistrationSettings() {
             "Run button is clipped or hidden in the small window");
 }
 
+// 五种融合表单切换时保持各自配置；恢复默认仅作用于当前方法。
+void verifyFusionSettings() {
+    mif::desktop::MainWindow window;
+    window.show();
+    FusionControls controls(window);
+    auto* tabs = window.findChild<QTabWidget*>("parameterTabs");
+    auto* run = window.findChild<QPushButton*>("primaryButton");
+    require(tabs && run && tabs->widget(1)->isAncestorOf(controls.settings),
+            "Fusion settings must be hosted in their parameter page");
+    tabs->setCurrentIndex(1);
+    flushLayout();
+    controls.requireValues(mif::FusionOptions{});
+    require(controls.method->count() == static_cast<int>(fusionMethods.size()) && controls.guided.focus != controls.pyramid.focus &&
+            controls.guided.window != controls.pyramid.window && controls.guided.radius != controls.pyramid.radius &&
+            controls.guided.epsilon != controls.pyramid.epsilon,
+            "Fusion methods must own independent parameter controls");
+    for (const auto& fields : {controls.guided, controls.pyramid}) {
+        require(fields.window->minimum() == 1 && fields.window->maximum() == 255 &&
+                fields.window->singleStep() == 2 && fields.radius->minimum() == 1 && fields.radius->maximum() == 255,
+                "Fusion window and radius ranges differ from the supported ranges");
+        require(fields.focus->count() == 2, "Fusion focus controls are incomplete");
+    }
+    // 融合正则项共享官方引导滤波的数值下限；ECC 收敛阈值仍独立保持 1e-8。
+    for (auto* epsilon : {controls.guided.epsilon, controls.base_epsilon,
+                          controls.pyramid.epsilon, controls.gfgfgf_epsilon}) {
+        require(std::abs(epsilon->minimum() - 1e-6) < 1e-12 &&
+                epsilon->maximum() == 1.0 && epsilon->decimals() == 8,
+                "Fusion regularization control has an incorrect safe range or precision");
+        epsilon->setValue(1e-8);
+        require(std::abs(epsilon->value() - 1e-6) < 1e-12,
+                "Fusion regularization control accepted a value below the numerical safety limit");
+    }
+    require(controls.base_radius->minimum() == 1 && controls.base_radius->maximum() == 255 &&
+            controls.levels->minimum() == 1 && controls.levels->maximum() == 16,
+            "Method-specific fusion ranges are incorrect");
+    require(controls.dct_block_size->minimum() == 2 && controls.dct_block_size->maximum() == 128 &&
+            controls.dct_window->minimum() == 1 && controls.dct_window->maximum() == 31 &&
+            controls.dtcwt_levels->minimum() == 1 && controls.dtcwt_levels->maximum() == 16 &&
+            controls.dtcwt_window->minimum() == 1 && controls.dtcwt_window->maximum() == 31 &&
+            controls.gfgfgf_window->minimum() == 1 && controls.gfgfgf_window->maximum() == 255 &&
+            controls.gfgfgf_radius->minimum() == 1 && controls.gfgfgf_radius->maximum() == 255,
+            "New fusion method integer ranges are incorrect");
+    require(controls.gfgfgf_selection->minimum() == 0 && controls.gfgfgf_selection->maximum() == 1 &&
+            controls.gfgfgf_threshold->minimum() == 0 && controls.gfgfgf_threshold->maximum() == 1,
+            "GFG-FGF ratio ranges are incorrect");
+
+    auto edited = customFusionOptions();
+    controls.setValues(edited);
+    for (const auto method : fusionMethods) {
+        controls.selectMethod(method);
+        edited.method = method;
+        controls.requireVisibility(method);
+        controls.requireValues(edited);
+        for (auto* field : controls.inputs()) {
+            if (!field->isVisibleTo(controls.settings)) continue;
+            field->setFocus();
+            const QPoint point = field->rect().center();
+            QWheelEvent event(QPointF(point), QPointF(field->mapToGlobal(point)), QPoint(), QPoint(0, 120),
+                              Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(field, &event);
+            controls.requireValues(edited);
+        }
+        tabs->setCurrentIndex(0);
+        flushLayout();
+        tabs->setCurrentIndex(1);
+        flushLayout();
+        controls.requireValues(edited);
+    }
+    controls.selectMethod(mif::FusionMethod::GuidedFilter);
+    edited.method = mif::FusionMethod::GuidedFilter;
+    controls.requireValues(edited);
+    // 奇数约束在控件内处理；主窗口无需了解任一融合方法的字段规则。
+    controls.guided.window->setValue(10);
+    edited.guided_filter.focus.window = 11;
+    controls.pyramid.window->setValue(14);
+    edited.laplacian_pyramid.focus.window = 15;
+    controls.dct_window->setValue(4);
+    edited.dct.consistency_window = 5;
+    controls.dtcwt_window->setValue(6);
+    edited.dtcwt.activity_window = 7;
+    controls.gfgfgf_window->setValue(10);
+    edited.gfgfgf.difference_window = 11;
+    controls.requireValues(edited);
+
+    for (const auto method : fusionMethods) {
+        edited = customFusionOptions();
+        edited.method = method;
+        controls.setValues(edited);
+        controls.reset->click();
+        const mif::FusionOptions defaults;
+        switch (method) {
+        case mif::FusionMethod::GuidedFilter: edited.guided_filter = defaults.guided_filter; break;
+        case mif::FusionMethod::LaplacianPyramid: edited.laplacian_pyramid = defaults.laplacian_pyramid; break;
+        case mif::FusionMethod::Dct: edited.dct = defaults.dct; break;
+        case mif::FusionMethod::Dtcwt: edited.dtcwt = defaults.dtcwt; break;
+        case mif::FusionMethod::Gfgfgf: edited.gfgfgf = defaults.gfgfgf; break;
+        }
+        controls.requireValues(edited);
+        controls.requireVisibility(method);
+    }
+
+    // 在小窗口中，每种表单都能滚动到恢复按钮；运行按钮始终位于滚动区外。
+    auto* scroll = qobject_cast<QScrollArea*>(tabs->widget(1));
+    require(scroll && !scroll->isAncestorOf(run), "Run button must remain outside the fusion scroll area");
+    window.resize(window.minimumSize());
+    tabs->setMaximumHeight(160);
+    for (const auto method : fusionMethods) {
+        controls.selectMethod(method);
+        require(scroll->verticalScrollBar()->maximum() > scroll->verticalScrollBar()->minimum(),
+                "Small fusion parameter page cannot scroll");
+        scroll->ensureWidgetVisible(controls.reset);
+        flushLayout();
+        require(scroll->viewport()->rect().contains(
+                    controls.reset->mapTo(scroll->viewport(), controls.reset->rect().center())),
+                "Fusion reset button cannot be reached by scrolling");
+        require(run->isVisibleTo(&window) && window.rect().contains(QRect(run->mapTo(&window, QPoint()), run->size())),
+                "Fusion settings clipped the fixed run button in the small window");
+    }
+}
+
+// 循环调整方法及清晰度条目的显示顺序，再以非默认配置执行，与相同参数的核心结果比较。
+void verifyFusionSelection(const QStringList& paths, const std::vector<cv::Mat>& images) {
+    for (const auto method : fusionMethods) {
+        mif::desktop::MainWindow window;
+        window.addPaths(paths);
+        FusionControls controls(window);
+        auto* registration = window.findChild<QGroupBox*>("registrationSettings");
+        require(registration != nullptr, "Registration group is missing from the fusion workflow");
+        for (auto* selector : {controls.method, controls.guided.focus, controls.pyramid.focus}) {
+            require(selector->count() == (selector == controls.method ? 5 : 2),
+                    "Fusion fixture has an unexpected method or focus selector");
+            const int last = selector->count() - 1;
+            const auto label = selector->itemText(last);
+            const auto value = selector->itemData(last);
+            selector->removeItem(last);
+            selector->insertItem(0, label, value);
+        }
+        auto options = customFusionOptions();
+        options.method = method;
+        controls.setValues(options);
+        controls.requireValues(options);
+        require(controls.method->currentIndex() != static_cast<int>(method),
+                "Fusion fixture must move the selected method away from its enum position");
+        const auto expected = mif::fuse(images, options);
+        runFusion(window, [&] {
+            require(!registration->isEnabled() && !controls.settings->isEnabled() && !controls.reset->isEnabled(),
+                    "Processing must lock both parameter groups and the fusion reset button");
+            for (auto* field : controls.inputs())
+                require(!field->isEnabled(), "A fusion field remained editable during processing");
+        });
+        require(registration->isEnabled() && controls.settings->isEnabled() && controls.reset->isEnabled(),
+                "Fusion parameter groups did not unlock after processing");
+        for (auto* field : controls.inputs())
+            require(field->isEnabled(), "A fusion field stayed disabled after processing");
+        controls.requireValues(options);
+        require(window.resultImage().size() == expected.image.size() &&
+                mae(window.resultImage(), expected.image) < 0.1,
+                "Desktop result differs from the selected method's complete fusion configuration");
+    }
+}
+
+// 以浮点平坦图验证最小合法正则项通过界面快照传入核心，且结果中没有 NaN/Inf。
+// 浮点 TIFF 保留输出精度，避免整数转换掩盖数值异常。
+void verifyMinimumFusionRegularization(const QTemporaryDir& directory) {
+    const std::vector<cv::Mat> images{
+        cv::Mat(64, 96, CV_32FC1, cv::Scalar(0.25)),
+        cv::Mat(64, 96, CV_32FC1, cv::Scalar(0.75))};
+    const QStringList paths{
+        directory.filePath(QStringLiteral("平坦_01.tif")),
+        directory.filePath(QStringLiteral("平坦_02.tif"))};
+    for (int i = 0; i < paths.size(); ++i)
+        mif::desktop::writeImage(paths[i], images[static_cast<std::size_t>(i)]);
+    for (const auto method : {mif::FusionMethod::GuidedFilter, mif::FusionMethod::LaplacianPyramid,
+                              mif::FusionMethod::Gfgfgf}) {
+        mif::FusionOptions options;
+        options.method = method;
+        options.guided_filter.base_epsilon = 1e-6;
+        options.guided_filter.detail_epsilon = 1e-6;
+        options.laplacian_pyramid.detail_epsilon = 1e-6;
+        options.gfgfgf.guided_epsilon = 1e-6;
+        mif::desktop::MainWindow window;
+        window.addPaths(paths);
+        FusionControls controls(window);
+        controls.setValues(options);
+        controls.requireValues(options);
+        const auto expected = mif::fuse(images, options);
+        runFusion(window);
+        require(window.resultImage().type() == CV_32FC1 && cv::checkRange(window.resultImage()) &&
+                cv::checkRange(expected.image) && mae(window.resultImage(), expected.image) < 1e-6,
+                "Minimum fusion regularization produced a non-finite or mismatched desktop result");
+    }
+}
+
 // 将算法和模型都挪到与枚举值不同的位置后真实执行，发现误用 currentIndex 的回归。
 void verifyRegistrationSelection(const QStringList& paths, const std::vector<cv::Mat>& images,
                                  mif::RegistrationMethod method, mif::MotionModel model) {
@@ -576,18 +951,23 @@ int main(int argc, char** argv) {
         verifyRegistrationSelection({affineFirst, affineSecond}, {reference, affine_shifted},
                                     mif::RegistrationMethod::Ecc, mif::MotionModel::Affine);
         verifyRegistrationSettings();
+        verifyFusionSettings();
+        verifyFusionSelection({first, second}, stack);
+        verifyMinimumFusionRegularization(temporary);
         verifyFolderBatchImport();
-        // 可选截图使用同一个已有结果的主窗口，依次检查默认、ECC、SIFT、融合和小窗口。
+        // 截图保留配准场景，检查五种融合表单及长表单底部，确认全部参数可达。
         // 不传截图路径时跳过此分支，不增加普通 CTest 的操作或输出文件。
         if (argc > 2) {
             RegistrationControls controls(window);
+            FusionControls fusion_controls(window);
             auto* tabs = window.findChild<QTabWidget*>("parameterTabs");
             require(tabs != nullptr, "Parameter tabs are missing from the screenshot window");
             const QFileInfo target(QString::fromLocal8Bit(argv[2]));
-            auto capture = [&](const QString& suffix) {
+            auto capture = [&](const QString& suffix, bool scroll_to_bottom = false) {
                 flushLayout();
                 for (auto* area : tabs->findChildren<QScrollArea*>()) {
-                    area->verticalScrollBar()->setValue(area->verticalScrollBar()->minimum());
+                    area->verticalScrollBar()->setValue(scroll_to_bottom
+                        ? area->verticalScrollBar()->maximum() : area->verticalScrollBar()->minimum());
                     area->horizontalScrollBar()->setValue(area->horizontalScrollBar()->minimum());
                 }
                 flushLayout();
@@ -604,12 +984,22 @@ int main(int argc, char** argv) {
             controls.selectMethod(mif::RegistrationMethod::Sift);
             capture("_sift");
             tabs->setCurrentIndex(1);
-            capture("_fusion");
+            fusion_controls.selectMethod(mif::FusionMethod::GuidedFilter);
+            capture("_fusion_guided");
+            capture("_fusion_guided_bottom", true);
+            fusion_controls.selectMethod(mif::FusionMethod::LaplacianPyramid);
+            capture("_fusion_pyramid");
+            fusion_controls.selectMethod(mif::FusionMethod::Dct);
+            capture("_fusion_dct");
+            fusion_controls.selectMethod(mif::FusionMethod::Dtcwt);
+            capture("_fusion_dtcwt");
+            fusion_controls.selectMethod(mif::FusionMethod::Gfgfgf);
+            capture("_fusion_gfgfgf");
             tabs->setCurrentIndex(0);
             window.resize(940, 670);
             capture("_small");
         }
-        std::cout << "PASS desktop import / preview / worker / export / precision / registration settings / folder batches\n";
+        std::cout << "PASS desktop import / preview / worker / export / precision / registration settings / fusion settings / folder batches\n";
         return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

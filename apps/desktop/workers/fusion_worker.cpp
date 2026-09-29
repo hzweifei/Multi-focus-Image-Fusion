@@ -39,6 +39,7 @@ void FusionWorker::run() {
                 {"prepare", QStringLiteral("准备图像")}, {"align", QStringLiteral("对齐图像")},
                 {"focus", QStringLiteral("计算清晰度")}, {"weights", QStringLiteral("优化融合权重")},
                 {"blend", QStringLiteral("融合图像")}, {"pyramid", QStringLiteral("重建金字塔")},
+                {"dtcwt", QStringLiteral("融合双树复小波系数")},
                 {"finish", QStringLiteral("生成结果")}, {"done", QStringLiteral("处理完成")}};
             const auto it = names.find(stage);
             emit progress(15 + percent * 85 / 100, it == names.end() ? QString::fromStdString(stage) : it->second);

@@ -9,6 +9,9 @@ function(mif_install_notices component)
         set(notice_directory licenses)
     endif()
     install(FILES "${PROJECT_SOURCE_DIR}/THIRD_PARTY_NOTICES.md" DESTINATION "${notice_directory}" COMPONENT ${component})
+    # 双树滤波器的数据出处和数学约定随各交付组件保留，方便使用者追溯实现来源。
+    install(FILES "${PROJECT_SOURCE_DIR}/algorithms/src/fusion/dtcwt/FILTERS.md"
+        DESTINATION "${notice_directory}/dtcwt" COMPONENT ${component})
     if(component STREQUAL "Python")
         install(FILES "${PROJECT_SOURCE_DIR}/ext/nanobind/LICENSE" DESTINATION "${notice_directory}/nanobind" COMPONENT ${component})
         install(FILES "${PROJECT_SOURCE_DIR}/ext/nanobind/ext/robin_map/LICENSE" DESTINATION "${notice_directory}/robin-map" COMPONENT ${component})

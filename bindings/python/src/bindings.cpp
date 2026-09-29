@@ -18,7 +18,7 @@ std::vector<cv::Mat> copyInputs(const std::vector<mif::python::InputArray>& arra
     return images;
 }
 
-// 各入口仅复制自己使用的配置，再释放 GIL。异常退出时 RAII 先恢复 GIL，
+// 各入口仅复制自己使用的配置，包括融合配置中的全部嵌套值，再释放 GIL。异常退出时 RAII 先恢复 GIL，
 // nanobind 随后把 C++ 异常转换成 Python 异常；结果包装也在恢复 GIL 后进行。
 mif::FusionResult runFusion(const std::vector<mif::python::InputArray>& arrays,
                             const mif::FusionOptions& options) {
@@ -57,7 +57,9 @@ nb::list arrayList(const std::vector<cv::Mat>& images) {
 nb::dict fusionDictionary(const mif::FusionResult& result) {
     nb::dict output;
     output["image"] = mif::python::toArray(result.image);
-    output["focus_indices"] = mif::python::toArray(result.focus_indices);
+    // DTCWT 在复系数域按尺度/方向选择来源，空诊断显式映射为 None。
+    if (result.focus_indices.empty()) output["focus_indices"] = nb::none();
+    else output["focus_indices"] = mif::python::toArray(result.focus_indices);
     output["weights"] = arrayList(result.weights);
     return output;
 }
@@ -72,7 +74,10 @@ void addRegistrationMetadata(nb::dict& output, const cv::Rect& crop,
 void bindOptions(nb::module_& module) {
     nb::enum_<mif::FusionMethod>(module, "FusionMethod")
         .value("GUIDED_FILTER", mif::FusionMethod::GuidedFilter)
-        .value("LAPLACIAN_PYRAMID", mif::FusionMethod::LaplacianPyramid);
+        .value("LAPLACIAN_PYRAMID", mif::FusionMethod::LaplacianPyramid)
+        .value("DCT", mif::FusionMethod::Dct)
+        .value("DTCWT", mif::FusionMethod::Dtcwt)
+        .value("GFGFGF", mif::FusionMethod::Gfgfgf);
     nb::enum_<mif::FocusMeasure>(module, "FocusMeasure")
         .value("MODIFIED_LAPLACIAN", mif::FocusMeasure::ModifiedLaplacian)
         .value("TENENGRAD", mif::FocusMeasure::Tenengrad);
@@ -85,17 +90,49 @@ void bindOptions(nb::module_& module) {
         .value("AFFINE", mif::MotionModel::Affine)
         .value("HOMOGRAPHY", mif::MotionModel::Homography);
 
-    // 融合配置只包含融合所需字段；旧 alignment_* 属性不再转发或隐式生效。
-    nb::class_<mif::FusionOptions>(module, "FusionOptions", "纯融合参数，不包含配准配置。")
+    nb::class_<mif::FocusOptions>(module, "FocusOptions", "清晰度指标及统计窗口，供双尺度引导滤波和拉普拉斯金字塔分别配置。")
+        .def(nb::init<>())
+        .def_rw("measure", &mif::FocusOptions::measure)
+        .def_rw("window", &mif::FocusOptions::window);
+    // def_rw 按值替换结构体；reference_internal 则让读取返回内部成员引用并保留父对象。
+    // 因此 options.guided_filter.focus.window = 7 会直接更新原配置，暂存子对象也不会悬空。
+    nb::class_<mif::GuidedFilterOptions>(module, "GuidedFilterOptions", "引导滤波融合独立参数。")
+        .def(nb::init<>())
+        .def_rw("focus", &mif::GuidedFilterOptions::focus, nb::rv_policy::reference_internal)
+        .def_rw("base_radius", &mif::GuidedFilterOptions::base_radius)
+        .def_rw("detail_radius", &mif::GuidedFilterOptions::detail_radius)
+        .def_rw("base_epsilon", &mif::GuidedFilterOptions::base_epsilon)
+        .def_rw("detail_epsilon", &mif::GuidedFilterOptions::detail_epsilon);
+    nb::class_<mif::LaplacianPyramidOptions>(module, "LaplacianPyramidOptions", "拉普拉斯金字塔融合独立参数。")
+        .def(nb::init<>())
+        .def_rw("focus", &mif::LaplacianPyramidOptions::focus, nb::rv_policy::reference_internal)
+        .def_rw("detail_radius", &mif::LaplacianPyramidOptions::detail_radius)
+        .def_rw("detail_epsilon", &mif::LaplacianPyramidOptions::detail_epsilon)
+        .def_rw("levels", &mif::LaplacianPyramidOptions::levels);
+    nb::class_<mif::DctOptions>(module, "DctOptions", "块方差融合参数；沿用参考项目 DCT 标识。")
+        .def(nb::init<>())
+        .def_rw("block_size", &mif::DctOptions::block_size)
+        .def_rw("consistency_window", &mif::DctOptions::consistency_window);
+    nb::class_<mif::DtcwtOptions>(module, "DtcwtOptions", "双树复小波融合参数；六方向复系数域融合。")
+        .def(nb::init<>())
+        .def_rw("levels", &mif::DtcwtOptions::levels)
+        .def_rw("activity_window", &mif::DtcwtOptions::activity_window);
+    nb::class_<mif::GfgfgfOptions>(module, "GfgfgfOptions", "梯度筛帧与两阶段引导滤波融合参数。")
+        .def(nb::init<>())
+        .def_rw("difference_window", &mif::GfgfgfOptions::difference_window)
+        .def_rw("selection_ratio", &mif::GfgfgfOptions::selection_ratio)
+        .def_rw("difference_threshold", &mif::GfgfgfOptions::difference_threshold)
+        .def_rw("guided_radius", &mif::GfgfgfOptions::guided_radius)
+        .def_rw("guided_epsilon", &mif::GfgfgfOptions::guided_epsilon);
+    // 各种方法分别保存配置，只校验选中方法；旧扁平字段不提供转发别名。
+    nb::class_<mif::FusionOptions>(module, "FusionOptions", "选择融合方法并分别保存各方法参数，不包含配准配置。")
         .def(nb::init<>())
         .def_rw("method", &mif::FusionOptions::method)
-        .def_rw("focus_measure", &mif::FusionOptions::focus_measure)
-        .def_rw("focus_window", &mif::FusionOptions::focus_window)
-        .def_rw("base_radius", &mif::FusionOptions::base_radius)
-        .def_rw("detail_radius", &mif::FusionOptions::detail_radius)
-        .def_rw("base_epsilon", &mif::FusionOptions::base_epsilon)
-        .def_rw("detail_epsilon", &mif::FusionOptions::detail_epsilon)
-        .def_rw("pyramid_levels", &mif::FusionOptions::pyramid_levels)
+        .def_rw("guided_filter", &mif::FusionOptions::guided_filter, nb::rv_policy::reference_internal)
+        .def_rw("laplacian_pyramid", &mif::FusionOptions::laplacian_pyramid, nb::rv_policy::reference_internal)
+        .def_rw("dct", &mif::FusionOptions::dct, nb::rv_policy::reference_internal)
+        .def_rw("dtcwt", &mif::FusionOptions::dtcwt, nb::rv_policy::reference_internal)
+        .def_rw("gfgfgf", &mif::FusionOptions::gfgfgf, nb::rv_policy::reference_internal)
         .def_rw("keep_weight_maps", &mif::FusionOptions::keep_weight_maps);
     nb::class_<mif::RegistrationOptions>(module, "RegistrationOptions", "独立配准参数，以第一张输入为参考。")
         .def(nb::init<>())

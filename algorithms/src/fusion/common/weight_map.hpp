@@ -5,11 +5,6 @@
 
 namespace mif::detail::fusion {
 
-/// 灰度引导滤波：用 guide 的边缘约束 input 权重的平滑，返回裁剪到 [0, 1] 的权重。
-/// 两个输入应为同尺寸 CV_32FC1，guide 和 input 均位于 [0, 1]；半径和正则项已校验。
-/// 返回新数据，不修改输入。
-cv::Mat guidedFilter(const cv::Mat& guide, const cv::Mat& input, int radius, double epsilon);
-
 /// 将一组同尺寸 CV_32FC1 清晰度图转换为归一化决策权重，输入列表不能为空。
 /// 与最大响应相差不超过 1e-8 的输入共同分配权重，避免平坦区域总偏向第一张图。
 std::vector<cv::Mat> decisionWeights(const std::vector<cv::Mat>& scores);

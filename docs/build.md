@@ -3,7 +3,8 @@
 ## 环境
 
 - C++17 编译器，例如 Visual Studio 2022、GCC 或 Clang。
-- CMake 3.21+，OpenCV 4.4+ 开发包（core、imgproc、imgcodecs、video、features2d、calib3d）。
+- CMake 3.21+，OpenCV 4.4+ 开发包（core、imgproc、imgcodecs、video、features2d、calib3d、ximgproc）。
+  `ximgproc` 来自 opencv_contrib，用于官方引导滤波；仅安装 OpenCV 主模块将无法配置。
 - 桌面应用：Qt 6 Widgets 或 Qt 5.15 Widgets。
 - 可选 Python 绑定：Python 3.9+ 开发文件和 NumPy。
 
@@ -25,7 +26,15 @@ Python 绑定开启时同时生成 `outputs/Release/python/mif/`。
 也可使用 `cmake --preset default` 和 `cmake --build --preset default`，在环境或
 不提交的 `CMakeUserPresets.json` 中配置本机依赖路径。
 
-Windows 使用 vcpkg 时，首次配置添加：
+Windows 使用 vcpkg 时安装匹配版本的扩展模块：
+
+```powershell
+vcpkg install "opencv4[contrib]:x64-windows" --recurse
+```
+
+本机安装版本为 OpenCV 4.12.0，同时包含 Debug 和 Release 库。DTCWT 变换由
+项目内 C++ 实现，运行时无需 Python 的 dtcwt/scipy，也不需要 AI 模型。
+首次配置添加：
 
 ```text
 -DCMAKE_TOOLCHAIN_FILE=<vcpkg目录>/scripts/buildsystems/vcpkg.cmake

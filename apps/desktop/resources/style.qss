@@ -32,6 +32,8 @@ QTabBar::tab:hover { color: #ffffff; background: #2a405a; }
 QScrollArea#parameterScroll { background: #19283b; border: none; }
 QGroupBox#registrationSettings, QGroupBox#fusionSettings { background: #19283b; border: none; margin: 0; padding: 0; }
 QWidget#registrationCommonFields, QWidget#registrationEccFields, QWidget#registrationSiftFields { background: transparent; }
+QWidget#guidedFilterFields, QWidget#laplacianPyramidFields { background: transparent; }
+QWidget#dctFields, QWidget#dtcwtFields, QWidget#gfgfgfFields { background: transparent; }
 QGroupBox { border: 1px solid #354c66; border-radius: 6px; margin-top: 10px; padding-top: 8px; }
 QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; color: #a9c2da; }
 /* 整数与小数控件使用相同的尺寸、禁用状态和高对比键盘焦点。 */

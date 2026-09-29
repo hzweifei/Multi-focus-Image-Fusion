@@ -14,6 +14,12 @@ void testPipeline();
 void testRegistrationHomography();
 void testRegistrationEcc();
 void testRegistrationFailure();
+void testDctFusion();
+void testGfgfgfFusion();
+void testDtcwtTransform();
+void testDtcwtFusion();
+void testDtcwtOptions();
+void testGuidedFilterNumerics();
 namespace {
 const std::vector<mif::FusionMethod> methods{mif::FusionMethod::GuidedFilter, mif::FusionMethod::LaplacianPyramid};
 
@@ -25,7 +31,9 @@ void quality() {
         const auto stack = focusStack(sharp);
         for (auto method : methods) {
             for (auto measure : {mif::FocusMeasure::ModifiedLaplacian, mif::FocusMeasure::Tenengrad}) {
-                mif::FusionOptions o; o.method = method; o.focus_measure = measure;
+                mif::FusionOptions o; o.method = method;
+                o.guided_filter.focus.measure = measure;
+                o.laplacian_pyramid.focus.measure = measure;
                 const auto output = mif::fuse(stack, o);
                 const double baseline = std::min(mae(stack[0], sharp), mae(stack[1], sharp));
                 const double error = mae(output.image, sharp);
@@ -55,7 +63,7 @@ void identity() {
             if (channels == 3) cv::cvtColor(image, image, cv::COLOR_GRAY2BGR);
             const cv::Mat before = image.clone();
             for (auto method : methods) {
-                mif::FusionOptions o; o.method = method; o.pyramid_levels = 16;
+                mif::FusionOptions o; o.method = method; o.laplacian_pyramid.levels = 16;
                 const auto result = mif::fuse({image, image, image}, o);
                 require(result.image.type() == image.type(), "Depth/channels were not preserved");
                 require(cv::norm(result.image, image, cv::NORM_INF) <= (depth == CV_32F ? 2e-6 : 1), "Identical inputs changed");
@@ -84,10 +92,139 @@ void validation() {
     rejects([&] { cv::Mat bad(32, 32, CV_32F, cv::Scalar(1.1)); mif::fuse({bad, bad}); });
     rejects([&] { cv::Mat bad(32, 32, CV_32F, cv::Scalar(std::nextafter(1.0f, 2.0f))); mif::fuse({bad, bad}); });
     rejects([&] { cv::Mat bad(32, 32, CV_32F, cv::Scalar(-0.1)); mif::fuse({bad, bad}); });
-    rejects([&] { mif::FusionOptions o; o.focus_window = 8; mif::fuse({image, image}, o); });
-    rejects([&] { mif::FusionOptions o; o.detail_epsilon = 0; mif::fuse({image, image}, o); });
-    rejects([&] { mif::FusionOptions o; o.pyramid_levels = 0; mif::fuse({image, image}, o); });
+    rejects([&] { mif::FusionOptions o; o.guided_filter.focus.window = 8; mif::fuse({image, image}, o); });
+    rejects([&] { mif::FusionOptions o; o.guided_filter.detail_epsilon = 0; mif::fuse({image, image}, o); });
+    rejects([&] { mif::FusionOptions o; o.method = mif::FusionMethod::LaplacianPyramid;
+                  o.laplacian_pyramid.levels = 0; mif::fuse({image, image}, o); });
     rejects([&] { mif::FusionOptions o; o.method = static_cast<mif::FusionMethod>(99); mif::fuse({image, image}, o); });
+    // 各方法分别维护自己的约束，逐项检查可发现拆分时漏掉某个字段的校验。
+    for (const auto method : methods) {
+        auto reject_option = [&](const std::function<void(mif::FusionOptions&)>& change) {
+            mif::FusionOptions options;
+            options.method = method;
+            change(options);
+            rejects([&] { mif::fuse({image, image}, options); });
+        };
+        auto focus = [method](mif::FusionOptions& options) -> mif::FocusOptions& {
+            return method == mif::FusionMethod::GuidedFilter ?
+                   options.guided_filter.focus : options.laplacian_pyramid.focus;
+        };
+        reject_option([&](auto& options) { focus(options).measure = static_cast<mif::FocusMeasure>(99); });
+        for (int value : {0, 2, 256})
+            reject_option([&](auto& options) { focus(options).window = value; });
+        for (int value : {0, 256}) {
+            reject_option([&](auto& options) {
+                if (method == mif::FusionMethod::GuidedFilter) options.guided_filter.detail_radius = value;
+                else options.laplacian_pyramid.detail_radius = value;
+            });
+            if (method == mif::FusionMethod::GuidedFilter)
+                reject_option([&](auto& options) { options.guided_filter.base_radius = value; });
+        }
+        for (double value : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
+                              std::numeric_limits<double>::infinity()}) {
+            reject_option([&](auto& options) {
+                if (method == mif::FusionMethod::GuidedFilter) options.guided_filter.detail_epsilon = value;
+                else options.laplacian_pyramid.detail_epsilon = value;
+            });
+            if (method == mif::FusionMethod::GuidedFilter)
+                reject_option([&](auto& options) { options.guided_filter.base_epsilon = value; });
+        }
+        if (method == mif::FusionMethod::LaplacianPyramid)
+            for (int value : {0, 17})
+                reject_option([&](auto& options) { options.laplacian_pyramid.levels = value; });
+    }
+}
+
+// 两种方法拥有各自的参数和值语义；未选中的参数既不参与计算，也不参与校验。
+void methodOptions() {
+    const mif::FusionOptions defaults;
+    require(defaults.method == mif::FusionMethod::GuidedFilter && !defaults.keep_weight_maps,
+            "Fusion entry defaults changed");
+    for (const auto& focus : {defaults.guided_filter.focus, defaults.laplacian_pyramid.focus})
+        require(focus.measure == mif::FocusMeasure::ModifiedLaplacian && focus.window == 9,
+                "A method's focus defaults changed");
+    require(defaults.guided_filter.base_radius == 15 && defaults.guided_filter.detail_radius == 3 &&
+            defaults.guided_filter.base_epsilon == 0.01 && defaults.guided_filter.detail_epsilon == 0.0001,
+            "Guided-filter defaults changed");
+    require(defaults.laplacian_pyramid.detail_radius == 3 &&
+            defaults.laplacian_pyramid.detail_epsilon == 0.0001 && defaults.laplacian_pyramid.levels == 5,
+            "Laplacian-pyramid defaults changed");
+    auto independent = defaults;
+    independent.guided_filter.focus.window = 3;
+    independent.laplacian_pyramid.focus.measure = mif::FocusMeasure::Tenengrad;
+    require(defaults.guided_filter.focus.window == 9 && independent.laplacian_pyramid.focus.window == 9 &&
+            defaults.laplacian_pyramid.focus.measure == mif::FocusMeasure::ModifiedLaplacian &&
+            independent.guided_filter.focus.measure == mif::FocusMeasure::ModifiedLaplacian,
+            "Method configurations share mutable focus settings");
+
+    auto equal = [](const mif::FusionResult& a, const mif::FusionResult& b) {
+        require(a.image.type() == b.image.type() && a.image.size() == b.image.size() &&
+                cv::norm(a.image, b.image, cv::NORM_INF) == 0, "Inactive settings changed fused pixels");
+        require(cv::norm(a.focus_indices, b.focus_indices, cv::NORM_INF) == 0,
+                "Inactive settings changed source indices");
+        require(a.weights.size() == b.weights.size(), "Inactive settings changed diagnostic count");
+        for (size_t i = 0; i < a.weights.size(); ++i)
+            require(cv::norm(a.weights[i], b.weights[i], cv::NORM_INF) == 0,
+                    "Inactive settings changed diagnostic weights");
+    };
+    const auto sharp = texture();
+    const auto images = focusStack(sharp);
+    const double source_error = std::min(mae(images[0], sharp), mae(images[1], sharp));
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    for (const auto method : methods) {
+        mif::FusionOptions options;
+        options.method = method;
+        options.keep_weight_maps = true;
+        const auto original = mif::fuse(images, options);
+        // 两组配置故意使用不同清晰度、窗口和权重参数，验证入口读取对应的完整参数组。
+        options.guided_filter.focus = {mif::FocusMeasure::Tenengrad, 5};
+        options.guided_filter.base_radius = 7;
+        options.guided_filter.detail_radius = 2;
+        options.guided_filter.base_epsilon = 0.02;
+        options.guided_filter.detail_epsilon = 0.002;
+        options.laplacian_pyramid.focus = {mif::FocusMeasure::ModifiedLaplacian, 7};
+        options.laplacian_pyramid.detail_radius = 4;
+        options.laplacian_pyramid.detail_epsilon = 0.003;
+        options.laplacian_pyramid.levels = 3;
+        const auto configured = mif::fuse(images, options);
+        require(cv::norm(configured.image, original.image, cv::NORM_INF) > 0,
+                "Non-default method settings were ignored");
+        require(mae(configured.image, sharp) < source_error,
+                "Non-default method failed to recover complementary focus");
+        require(configured.focus_indices.type() == CV_32SC1 && configured.weights.size() == images.size(),
+                "Method did not produce its source diagnostics");
+        const auto saved = options;
+        if (method == mif::FusionMethod::GuidedFilter) {
+            options.laplacian_pyramid.focus = {static_cast<mif::FocusMeasure>(99), 0};
+            options.laplacian_pyramid.detail_radius = -1;
+            options.laplacian_pyramid.detail_epsilon = nan;
+            options.laplacian_pyramid.levels = 0;
+        } else {
+            options.guided_filter.focus = {static_cast<mif::FocusMeasure>(99), 0};
+            options.guided_filter.base_radius = 0;
+            options.guided_filter.detail_radius = -1;
+            options.guided_filter.base_epsilon = nan;
+            options.guided_filter.detail_epsilon = 0;
+        }
+        equal(configured, mif::fuse(images, options));
+        // 同一无效参数组被选中后必须立即拒绝，不能先归一化输入或触发进度回调。
+        options.method = method == mif::FusionMethod::GuidedFilter ?
+                         mif::FusionMethod::LaplacianPyramid : mif::FusionMethod::GuidedFilter;
+        bool rejected = false, reported = false;
+        try {
+            mif::fuse(images, options, [&](int, const std::string&) { reported = true; return true; });
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        require(rejected && !reported, "Selected invalid method settings were not rejected before processing");
+        // 切换并执行其他方法后，原配置的计算结果应保持一致。
+        options = saved;
+        options.method = method == mif::FusionMethod::GuidedFilter ?
+                         mif::FusionMethod::LaplacianPyramid : mif::FusionMethod::GuidedFilter;
+        mif::fuse(images, options);
+        options.method = method;
+        equal(configured, mif::fuse(images, options));
+    }
 }
 
 // 常量图像没有清晰度差异，应等权平均；保留的权重须非负且逐像素和为 1。
@@ -172,7 +309,7 @@ void cancellation() {
 void largeStack() {
     std::vector<cv::Mat> images(257, cv::Mat::zeros(13, 15, CV_8U));
     images.back() = texture(13, 15);
-    mif::FusionOptions o; o.focus_window = 3; o.detail_radius = 1;
+    mif::FusionOptions o; o.guided_filter.focus.window = 3; o.guided_filter.detail_radius = 1;
     const auto result = mif::fuse(images, o);
     double maximum;
     cv::minMaxLoc(result.focus_indices, nullptr, &maximum);
@@ -182,10 +319,13 @@ void largeStack() {
 int main(int argc, char** argv) {
     const std::map<std::string, std::function<void()>> tests{
         {"focus", testFocusMeasure}, {"quality", quality}, {"identity", identity},
-        {"validation", validation}, {"weights", weights}, {"cancellation", cancellation},
+        {"validation", validation}, {"method_options", methodOptions},
+        {"weights", weights}, {"cancellation", cancellation},
         {"pipeline", testPipeline}, {"alignment", testRegistrationAlignment}, {"registration_homography", testRegistrationHomography},
         {"registration_ecc", testRegistrationEcc}, {"registration_failure", testRegistrationFailure},
-        {"large_stack", largeStack}};
+        {"large_stack", largeStack}, {"dct", testDctFusion}, {"gfgfgf", testGfgfgfFusion},
+        {"dtcwt_transform", testDtcwtTransform}, {"dtcwt_fusion", testDtcwtFusion}, {"dtcwt_options", testDtcwtOptions},
+        {"guided_filter_numerics", testGuidedFilterNumerics}};
     try {
         if (argc != 2 || tests.count(argv[1]) == 0) throw std::runtime_error("Specify a test case");
         tests.at(argv[1])(); std::cout << "PASS " << argv[1] << '\n'; return 0;

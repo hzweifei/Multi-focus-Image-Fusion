@@ -15,7 +15,13 @@ licenses/      第三方声明
 | 头文件 | 内容 |
 |---|---|
 | `fusion.hpp` | `fuse()`、`FusionResult`；包含融合参数和进度约定 |
-| `fusion_options.hpp` | `FusionOptions`、`FusionMethod`、`FocusMeasure` |
+| `fusion_options.hpp` | `FusionOptions`、`FusionMethod`；包含五种方法的参数头 |
+| `fusion/focus_options.hpp` | `FocusOptions`、`FocusMeasure` |
+| `fusion/guided_filter_options.hpp` | `GuidedFilterOptions` |
+| `fusion/laplacian_pyramid_options.hpp` | `LaplacianPyramidOptions` |
+| `fusion/dct_options.hpp` | `DctOptions` |
+| `fusion/dtcwt_options.hpp` | `DtcwtOptions` |
+| `fusion/gfgfgf_options.hpp` | `GfgfgfOptions` |
 | `registration.hpp` | `registerImages()`、`RegistrationResult`；包含配准参数和进度约定 |
 | `registration_options.hpp` | `RegistrationOptions`、`RegistrationMethod`、`MotionModel` |
 | `pipeline.hpp` | `registerAndFuse()`、`PipelineResult`；包含两阶段公开接口 |
@@ -27,6 +33,8 @@ licenses/      第三方声明
 Windows 当前版本使用 MSVC x64。
 
 公开接口使用 `cv::Mat`，因此开发者还需提供与 SDK 构建版本相同的 OpenCV **开发包**。
+开发包必须包含 `opencv_contrib` 的 `ximgproc` 模块，用于官方引导滤波。
+`find_package(Mif)` 会按 SDK 构建时的版本查找 OpenCV，包括 `ximgproc`。
 SDK 中包含运行所需 DLL，不复制 OpenCV 的头文件或第三方导入库。
 
 ```cmake
@@ -66,6 +74,8 @@ auto registered = mif::registerImages(images, registration);
 
 mif::FusionOptions fusion;
 fusion.keep_weight_maps = true;
+fusion.guided_filter.focus.window = 7;
+fusion.guided_filter.base_radius = 15;
 auto result = mif::fuse(registered.images, fusion);
 cv::Mat fused = result.image;
 ```
@@ -93,6 +103,47 @@ const auto& transforms = result.transforms;
 默认 `MotionModel::Translation`。SIFT 固定求解单应性，忽略保留的合法模型值；
 关闭配准时也不使用该字段。两个枚举的非法值均会被拒绝。
 
+融合参数按方法保存，仅选中方法参与计算和校验：
+
+| `FusionMethod` | 配置成员 | 参数 |
+|---|---|---|
+| `GuidedFilter` | `guided_filter` | `focus`、基础/细节滤波半径与正则项 |
+| `LaplacianPyramid` | `laplacian_pyramid` | `focus`、细节滤波半径与正则项、`levels` |
+| `Dct` | `dct` | `block_size`、`consistency_window` |
+| `Dtcwt` | `dtcwt` | `levels`、`activity_window` |
+| `Gfgfgf` | `gfgfgf` | `difference_window`、`selection_ratio`、`difference_threshold`、`guided_radius`、`guided_epsilon` |
+
+GFF 的 `base_epsilon`、`detail_epsilon`，金字塔的 `detail_epsilon`，以及 GFG-FGF 的
+`guided_epsilon` 均须为 `[1e-6, FLT_MAX]` 范围内的有限数；`FLT_MAX` 约为 `3.4e38`。
+该范围适应官方引导滤波的浮点精度，防止平坦区域除零或转换为 float32 时溢出；
+ECC 的 `RegistrationOptions.epsilon` 是独立的收敛阈值。Qt 融合界面采用 `[1e-6, 1]`
+作为常用调参范围。
+
+```cpp
+mif::FusionOptions options;
+options.guided_filter.focus.measure = mif::FocusMeasure::Tenengrad;
+options.guided_filter.focus.window = 7;
+options.guided_filter.detail_radius = 2;
+options.laplacian_pyramid.focus.window = 11;
+options.laplacian_pyramid.levels = 4;
+options.dct.block_size = 8;
+options.dct.consistency_window = 7;
+options.method = mif::FusionMethod::Dct;
+auto result = mif::fuse(images, options); // 仅使用 dct 配置，其他方法的值保留。
+```
+
+`focus_indices` 和 `weights` 是方法提供的可选诊断，使用前应检查是否为空：
+
+| 方法 | `focus_indices` | `keep_weight_maps=true` 时的 `weights` |
+|---|---|---|
+| GFF、拉普拉斯金字塔 | 最大细节权重的来源索引 | 归一化细节权重 |
+| DCT 块方差 | 经过一致性处理的块来源索引 | 选块权重 |
+| GFG-FGF | 最大最终权重的来源索引 | 最终融合权重，排除帧为全零 |
+| DTCWT | 空 `cv::Mat` | 空 `std::vector` |
+
+索引从零开始并对应原始输入顺序；权重存在时也按该顺序排列。关闭权重保留时，
+`weights` 一律为空。DTCWT 在多个尺度和方向选择系数，开启诊断也不会生成单一来源图。
+
 每个入口的最后一个参数均可传入 `ProgressCallback`。回调在调用线程执行，
 返回 `false` 抛出 `mif::Cancelled`；回调自身异常原样传播。
 
@@ -104,6 +155,39 @@ Windows 运行时将 `bin/` 中的 DLL 复制到调用程序旁边，或将 SDK 
 MSVC 下还会传递 `/utf-8`，以正确读取公开头文件中的中文注释；调用方源码也应使用 UTF-8。
 
 ## 接口迁移
+
+### 新增方法与官方引导滤波
+
+`FusionOptions` 新增 `dct`、`dtcwt`、`gfgfgf` 配置。`FusionMethod::GuidedFilter=0`
+和 `LaplacianPyramid=1` 保持原值，新方法在其后追加。参数结构的大小已改变，
+**SDK 消费方必须使用配套的新头文件和新库重新编译，不承诺二进制兼容**。
+
+引导滤波已改用 OpenCV `ximgproc`，边界处理遵循该实现；与旧版本不承诺逐像素相同。
+部署时应更新 OpenCV 开发包及运行库，不能只替换 `mif_core.dll`。
+读取诊断时应允许空值，尤其是 DTCWT 的空索引和空权重。
+
+### 融合方法独立参数
+
+`FusionOptions` 不再直接包含清晰度和滤波数值字段，改为持有各方法的独立配置。
+原来的扁平属性已移除，不提供转发别名。根据当时使用的方法迁移：
+
+| 旧字段 | 双尺度引导滤波 | 拉普拉斯金字塔 |
+|---|---|---|
+| `focus_measure` | `guided_filter.focus.measure` | `laplacian_pyramid.focus.measure` |
+| `focus_window` | `guided_filter.focus.window` | `laplacian_pyramid.focus.window` |
+| `detail_radius` | `guided_filter.detail_radius` | `laplacian_pyramid.detail_radius` |
+| `detail_epsilon` | `guided_filter.detail_epsilon` | `laplacian_pyramid.detail_epsilon` |
+| `base_radius` | `guided_filter.base_radius` | 不使用 |
+| `base_epsilon` | `guided_filter.base_epsilon` | 不使用 |
+| `pyramid_levels` | 不使用 | `laplacian_pyramid.levels` |
+
+`method`、`keep_weight_maps` 和处理入口保持原名。Python 使用相同的成员路径，
+也可单独创建 `mif.FocusOptions()`、`mif.GuidedFilterOptions()`、`mif.LaplacianPyramidOptions()`。
+两组配置独立存值；原来依赖一组数值控制两种方法的代码，现在需要分别赋值。
+计算只校验当前方法，未选中配置中的非法值不会影响当前处理，切换后才会被拒绝。
+这张迁移表适用于原有两种方法；新增方法使用自己的参数结构和诊断语义。
+
+### 配准与融合分阶段
 
 配准配置与流程已从融合接口拆出，旧调用方按下表更新：
 

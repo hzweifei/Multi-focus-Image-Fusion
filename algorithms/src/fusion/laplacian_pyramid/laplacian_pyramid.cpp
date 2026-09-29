@@ -1,9 +1,11 @@
-#include "fusion/fusion.hpp"
-#include "fusion/focus_measure.hpp"
-#include "fusion/weight_map.hpp"
+#include "fusion/laplacian_pyramid/laplacian_pyramid.hpp"
+#include "fusion/common/focus_measure.hpp"
+#include "fusion/common/guided_filter.hpp"
+#include "fusion/common/weight_map.hpp"
 #include "common/progress.hpp"
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
+#include <stdexcept>
 #include <utility>
 
 namespace mif::detail::fusion {
@@ -70,9 +72,17 @@ cv::Mat blendPyramid(const std::vector<cv::Mat>& images,
 
 } // 匿名命名空间
 
+void validateLaplacianPyramidOptions(const LaplacianPyramidOptions& options) {
+    validateFocusOptions(options.focus);
+    if (options.detail_radius < 1 || options.detail_radius > 255 ||
+        options.levels < 1 || options.levels > 16)
+        throw std::invalid_argument("Invalid Laplacian-pyramid options; check radius and levels");
+    validateGuidedEpsilon(options.detail_epsilon);
+}
+
 MethodResult laplacianPyramidFusion(const std::vector<cv::Mat>& images,
-                                    const FusionOptions& options, const ProgressCallback& progress) {
-    auto maps = prepareFocusMaps(images, options, progress);
+                                    const LaplacianPyramidOptions& options, const ProgressCallback& progress) {
+    auto maps = prepareFocusMaps(images, options.focus, progress);
     std::vector<cv::Mat> detail_weights;
     for (size_t i = 0; i < images.size(); ++i) {
         report(progress, 50 + static_cast<int>(20 * i / images.size()), "weights");
@@ -83,7 +93,9 @@ MethodResult laplacianPyramidFusion(const std::vector<cv::Mat>& images,
     maps.decisions.clear();
     normalizeWeights(detail_weights);
     MethodResult result;
-    result.image = blendPyramid(images, detail_weights, options.pyramid_levels, progress);
+    result.image = blendPyramid(images, detail_weights, options.levels, progress);
+    // 诊断使用全分辨率细节权重；它不包含重建时各尺度平滑后的全部贡献。
+    result.focus_indices = dominantIndices(detail_weights);
     result.weights = std::move(detail_weights);
     return result;
 }

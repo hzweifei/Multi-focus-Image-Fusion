@@ -7,18 +7,16 @@
 
 // 前置声明可以减少公开此窗口类时需要包含的 Qt 头文件。
 class QListWidget;
-class QComboBox;
-class QSpinBox;
 class QPushButton;
 class QLabel;
 class QProgressBar;
-class QGroupBox;
 namespace Ui { class MainWindow; }
 
 namespace mif::desktop {
 class ImageView;
 class FusionWorker;
 class RegistrationSettings;
+class FusionSettings;
 
 /// 桌面程序主窗口：管理输入、参数和预览，耗时的读取与融合交给后台线程。
 /// 所有控件和 result_ 只由界面线程访问，窗口拥有 Qt 子控件的生命周期。
@@ -47,8 +45,6 @@ signals:
     void fusionFailed(const QString& message);
 
 protected:
-    /// 参数页滚动时忽略输入控件的滚轮改值，避免浏览设置时误改算法参数。
-    bool eventFilter(QObject* watched, QEvent* event) override;
     /// 正在处理时暂缓关闭，等工作线程结束后再关闭并保存窗口布局。
     void closeEvent(QCloseEvent* event) override;
     /// 空闲时允许拖入包含文件路径的内容。
@@ -75,16 +71,11 @@ private:
     // Designer 文件只提供窗口外壳；其余控件由两个创建函数填入 workspaceLayout。
     std::unique_ptr<Ui::MainWindow> ui_;
 
-    // 输入列表和算法参数。下拉框条目数据保存核心枚举，不依赖显示顺序。
+    // 输入列表与两组独立配置。具体字段和方法切换由各自的参数控件管理。
     QListWidget* files_;
-    QComboBox* method_;
-    QComboBox* focus_;
-    QSpinBox* window_;
-    QSpinBox* levels_;
-    QSpinBox* radius_;
     // 两组参数独立组织，运行期间一起锁定，防止界面显示的配置与任务快照不一致。
     RegistrationSettings* registration_parameters_;
-    QGroupBox* fusion_parameters_;
+    FusionSettings* fusion_parameters_;
 
     // 输入管理及任务操作按钮，由 Qt 父子对象关系统一释放。
     QPushButton* add_;

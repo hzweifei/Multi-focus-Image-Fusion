@@ -1,6 +1,6 @@
-# 核心依赖：基础图像处理、ECC、SIFT 特征及 RANSAC 单应性估计。
-# SIFT 已属于 OpenCV 主仓库的 features2d 模块，无需 opencv-contrib 或 AI 框架。
-find_package(OpenCV 4.4 REQUIRED COMPONENTS core imgproc imgcodecs video features2d calib3d)
+# 核心依赖：基础图像处理、ECC、SIFT、RANSAC 及官方引导滤波。
+# ximgproc 属于 opencv_contrib；vcpkg 使用 opencv4[contrib] 安装，不需要 AI 框架。
+find_package(OpenCV 4.4 REQUIRED COMPONENTS core imgproc imgcodecs video features2d calib3d ximgproc)
 if(MIF_BUILD_GUI)
     # 优先使用 Qt 6；已有 Qt 5 开发环境时也可构建同一套 Widgets 界面。
     find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets)

@@ -1,31 +1,7 @@
-#include "fusion/weight_map.hpp"
+#include "fusion/common/weight_map.hpp"
 #include <opencv2/imgproc.hpp>
 
 namespace mif::detail::fusion {
-
-cv::Mat guidedFilter(const cv::Mat& guide, const cv::Mat& input, int radius, double epsilon) {
-    const cv::Size size(2 * radius + 1, 2 * radius + 1);
-    // 引导滤波在每个窗口内假设输出 q = aI + b；这里用箱式滤波快速计算局部均值。
-    auto mean = [size](const cv::Mat& image) {
-        cv::Mat result;
-        cv::boxFilter(image, result, CV_32F, size);
-        return result;
-    };
-    const cv::Mat mean_i = mean(guide), mean_p = mean(input);
-    cv::Mat variance = mean(guide.mul(guide)) - mean_i.mul(mean_i);
-    // 浮点舍入可能使理论上非负的方差略小于零，先截断以保持分母稳定。
-    cv::max(variance, 0, variance);
-    cv::Mat a;
-    // a = cov(I, p) / (var(I) + epsilon)，b = mean(p) - a * mean(I)。
-    cv::divide(mean(guide.mul(input)) - mean_i.mul(mean_p), variance + epsilon, a);
-    const cv::Mat b = mean_p - a.mul(mean_i);
-    // 一个像素位于多个重叠窗口内，因此对 a、b 再求均值后组合得到输出权重。
-    cv::Mat result = mean(a).mul(guide) + mean(b);
-    // 局部线性模型可能产生轻微过冲；权重限制在 [0, 1] 后再由调用方跨图归一化。
-    cv::max(result, 0, result);
-    cv::min(result, 1, result);
-    return result;
-}
 
 std::vector<cv::Mat> decisionWeights(const std::vector<cv::Mat>& scores) {
     cv::Mat maximum = scores.front().clone();

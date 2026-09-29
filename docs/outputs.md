@@ -8,7 +8,7 @@ outputs/
 │   ├── app/                    Qt 桌面程序，可直接运行 mif_desktop.exe
 │   │   ├── mif_desktop.exe
 │   │   ├── mif_core.dll
-│   │   ├── *.dll              Qt、OpenCV 及其运行依赖
+│   │   ├── *.dll              Qt、OpenCV（含 ximgproc）及其运行依赖
 │   │   ├── platforms/         Windows 窗口插件
 │   │   ├── iconengines/       SVG 图标插件
 │   │   └── licenses/
@@ -21,7 +21,7 @@ outputs/
 │   │   ├── include/mif/      融合、配准、组合流程及参数和进度的公开头文件
 │   │   ├── lib/              mif_core.lib（DLL 导入库）
 │   │   │   └── cmake/Mif/    外部 CMake 项目的接入配置
-│   │   ├── bin/              mif_core.dll、OpenCV 运行依赖
+│   │   ├── bin/              mif_core.dll、OpenCV（含 ximgproc）运行依赖
 │   │   ├── README.md
 │   │   └── licenses/
 │   └── examples/             C++ 调用示例及运行依赖
@@ -31,6 +31,10 @@ outputs/
 
 `build/` 保留工程文件、目标文件、测试程序和编译中间产物。交付程序以 `outputs/`
 为准。`outputs/` 已被 Git 忽略。
+
+官方引导滤波需要 OpenCV 的 `ximgproc` 模块。Windows 部署脚本按实际依赖自动收集
+该模块及其依赖的 DLL，覆盖桌面程序、Python 包、SDK 和示例；DLL 名称随 OpenCV
+版本和构建方式变化。增加该依赖后，应重新整理完整交付目录。
 
 ## 常用命令
 
@@ -79,15 +83,21 @@ DLL 目录，通常不需要设置 OpenCV PATH。wheel 中也包含这些运行�
 组合入口 `register_and_fuse()`。配准和融合分别使用 `RegistrationOptions` 与
 `FusionOptions`；组合入口返回含 `image`、`focus_indices`、`weights`、`crop`、`transforms`
 的平坦字典。调用示例见 [项目说明](../README.md#使用)。
+五种融合配置分别为 `guided_filter`、`laplacian_pyramid`、`dct`、`dtcwt`、`gfgfgf`。
+选择 DTCWT 时，详细结果中的 `focus_indices=None`、`weights=[]`；图像照常返回。
 
 ## C++ 使用
 
 把完整 `sdk/` 目录交给使用者，接入方式见 [SDK 说明](sdk.md)。调用者仍需相同
-版本 OpenCV 的开发包，因为公开接口包含 `cv::Mat`；运行库已收集在 SDK 的 `bin/`。
+版本且包含 `ximgproc` 的 OpenCV 开发包，因为公开接口包含 `cv::Mat`；运行库由部署
+脚本收集到 SDK 的 `bin/`。`find_package(Mif)` 也会查找 `ximgproc`。
 公开入口分别位于 `fusion.hpp`、`registration.hpp`、`pipeline.hpp`；参数位于
-`fusion_options.hpp` 和 `registration_options.hpp`，共用回调位于 `progress.hpp`，
+`fusion_options.hpp` 和 `registration_options.hpp`；融合各方法参数位于 `include/mif/fusion/`，
+由 `fusion_options.hpp` 一并包含，共用回调位于 `progress.hpp`，
 另安装 CMake 生成的 `export.hpp`。旧 `options.hpp` 已移除，更新后需按
 [接口迁移](sdk.md#接口迁移) 调整调用方并重新编译。
+新增三个方法后，`FusionOptions` 的结构大小发生变化；即使原有方法的枚举值保持不变，
+SDK 消费方也须重新编译。Python 的包装文件、扩展和核心 DLL 应成套更新。
 
 Windows 运行依赖收集和 Qt 部署已实现。Linux/macOS 当前只安装本项目的库，
 第三方运行库仍由使用者环境提供，尚未验证其独立打包。Windows 目标机器需有

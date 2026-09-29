@@ -15,8 +15,16 @@ images = [cv2.imread(path, cv2.IMREAD_UNCHANGED) for path in sys.argv[2:]]
 if any(image is None for image in images):
     raise SystemExit("One or more images could not be read")
 options = mif.FusionOptions()
-# 默认演示引导滤波融合，也可改为 mif.FusionMethod.LAPLACIAN_PYRAMID。
+# 默认演示引导滤波，也可选择 LAPLACIAN_PYRAMID、DCT、DTCWT、GFGFGF。
 options.method = mif.FusionMethod.GUIDED_FILTER
+# 每种方法各自保存完整参数，修改一种方法不会覆盖另一种方法的设置。
+options.guided_filter.focus.measure = mif.FocusMeasure.MODIFIED_LAPLACIAN
+options.guided_filter.focus.window = 9
+options.guided_filter.detail_radius = 3
+# 改用金字塔时可设置 options.laplacian_pyramid.focus.window 和 .levels。
+# 块方差：options.method = mif.FusionMethod.DCT；options.dct.block_size = 8。
+# 复小波：options.method = mif.FusionMethod.DTCWT；options.dtcwt.levels = 4。
+# GFG-FGF：options.method = mif.FusionMethod.GFGFGF；options.gfgfgf.selection_ratio = 0.15。
 # 此入口只执行融合；配准使用独立的 RegistrationOptions 和 register_images。
 result = mif.fuse(images, options)
 suffix = sys.argv[1].lower().rsplit(".", 1)[-1]

@@ -1,7 +1,8 @@
 # 传统多聚焦融合
 
 本实现借鉴 OpenFocus 的“配准 → 清晰度估计 → 权重优化 → 融合”工作流。
-当前提供两种 C++ 实现：双尺度引导滤波融合和拉普拉斯金字塔融合。
+当前提供五种独立 C++ 实现：GFF 引导滤波、DCT 块方差、DTCWT 双树复小波、
+GFG-FGF，以及额外的拉普拉斯金字塔融合。
 不加载神经网络或预训练模型，也不依赖 Torch、ONNX Runtime 或 CUDA。
 源码位置与阅读顺序见 [算法模块导航](../algorithms/README.md)。
 
@@ -14,8 +15,9 @@ float32 输入已经处于 `[0, 1]`。融合输出裁剪到 `[0, 1]` 后恢复�
 在阶段之间恢复原位深，经过一次舍入；与旧版内部始终传递浮点工作图的流程相比，
 融合结果可能有少量像素差异。
 
-灰度图直接计算清晰度，彩色图用 OpenCV BGR 到灰度转换；同一套权重作用于
-全部颜色通道，避免每个通道独立选图带来的颜色不一致。
+GFF、金字塔与 DCT 用灰度评分，并把同一组权重应用于全部 BGR 通道。
+GFG-FGF 沿用参考实现，以首图总亮度最大的通道评分；DTCWT 则独立处理各通道的
+小波系数。两者的通道策略不同，遇到明显色偏或曝光差异时需检查融合结果。
 
 ## 2. 可选配准
 
@@ -83,7 +85,7 @@ result = mif.fuse(registered["images"])
 
 ## 3. 清晰度计算
 
-实现位于 `algorithms/src/fusion/focus_measure.cpp`。清晰度指标只给图像局部评分，
+实现位于 `algorithms/src/fusion/common/focus_measure.cpp`，供 GFF 和金字塔使用。清晰度指标只给图像局部评分，
 完整融合方法还需要权重优化和图像重建。
 
 - **改进拉普拉斯**：分别计算水平、垂直二阶差分，取绝对值之和，再做窗口均值。
@@ -94,7 +96,8 @@ result = mif.fuse(registered["images"])
 
 ## 4. 引导滤波权重
 
-引导滤波算子位于 `algorithms/src/fusion/weight_map.cpp`，供两种融合方法复用。
+引导滤波权重适配位于 `algorithms/src/fusion/common/guided_filter.cpp`，调用
+`cv::ximgproc::guidedFilter`，供 GFF、金字塔和 GFG-FGF 的权重细化复用。
 
 对每张图像的决策权重 `p`，使用该图像灰度 `I` 作为引导：
 
@@ -104,19 +107,30 @@ b = mean(p) - a*mean(I)
 w = mean(a)*I + mean(b)
 ```
 
-均值用方框滤波计算。权重裁剪到 `[0, 1]` 后按图像栈归一化；如果某处权重和
-接近零，则均分权重。实现只需要 OpenCV 基础模块，不需要 opencv-contrib。
+公式由 OpenCV 官方实现计算，按完整分辨率运行，不使用降采样近似。
+权重裁剪到 `[0, 1]` 后按候选图像归一化；如果某处权重和接近零，则均分权重。
+依赖 opencv_contrib 的 `ximgproc`，CMake 与对外 SDK 均显式声明该模块。
+官方实现使用 `BORDER_REFLECT`，旧手写实现使用 `BORDER_REFLECT_101`；因此边界附近
+会有输出差异，不能按逐位一致替换来理解。GFG-FGF 第一阶段滤波的是有符号响应，
+直接调用官方接口保留负值，第二阶段才按权重裁剪。
 
-## 5. 两种融合方法
+所有引导滤波正则项须位于 `[1e-6, FLT_MAX]`，其中 `FLT_MAX` 是 float32 最大有限值。
+更小的数可能在官方 float32 协方差计算中被舍去，使平坦区域出现除零和 NaN；超过上限
+会在转换成 float 时溢出。入口显式拒绝这些值，默认参数不变。Qt 提供 `[1e-6, 1]`
+的常用调节范围。这一限制只针对融合引导滤波，不改变 ECC 的收敛阈值。
 
-融合方法位于 `algorithms/src/fusion/`，每个方法文件包含权重生成和重建流程。
-该目录的 `fusion.cpp` 实现公开 `fuse()`：校验融合参数、归一化输入、选择方法、
-恢复位深并整理来源索引和可选权重。`focus_measure.cpp` 提供共用的清晰度与初始决策图计算。
+## 5. 五种融合方法
+
+融合方法位于 `algorithms/src/fusion/` 的独立子目录，每种方法拥有自己的配置类型、
+校验函数、权重生成、重建及诊断过程。该目录的 `fusion.cpp` 实现公开 `fuse()`：
+分派所选方法的校验和执行、归一化输入、恢复位深并搬运诊断结果。
+`common/` 提供按需复用的清晰度、引导滤波及权重工具，新方法无需强制经过这些步骤。
 `algorithms/src/pipeline.cpp` 仅组合独立的配准与融合入口，并换算总进度。
 
 ### 双尺度引导滤波（默认）
 
-实现文件：`algorithms/src/fusion/guided_filter.cpp`。
+实现文件：`algorithms/src/fusion/guided_filter/guided_filter.cpp`。
+公开参数：`GuidedFilterOptions`，通过 `FusionOptions.guided_filter` 设置。
 
 输入图像经均值滤波得到基础层，输入减去基础层得到细节层。基础层使用较大半径、
 较强正则化的引导权重，细节层使用较小半径、较弱正则化的权重。
@@ -125,11 +139,53 @@ w = mean(a)*I + mean(b)
 
 ### 拉普拉斯金字塔
 
-实现文件：`algorithms/src/fusion/laplacian_pyramid.cpp`，为本项目新增的融合方法。
+实现文件：`algorithms/src/fusion/laplacian_pyramid/laplacian_pyramid.cpp`，为本项目新增的融合方法。
+公开参数：`LaplacianPyramidOptions`，通过 `FusionOptions.laplacian_pyramid` 设置。
 
 输入图像构建拉普拉斯金字塔，细节权重构建高斯金字塔。每层权重重新归一化，
 融合对应频带后逐层上采样重建。显式传递每层尺寸，支持奇数宽高；层数根据
 图像大小自动限制。逐张构建金字塔并累加，避免同时持有全部输入金字塔。
+当前从原分辨率的决策权重生成各尺度权重，不在每层重新计算清晰度。
+
+### DCT／块方差
+
+实现文件：`algorithms/src/fusion/dct/dct.cpp`，配置为 `FusionOptions.dct`。
+
+按非重叠方块计算灰度方差，选择方差最大的源图，对块来源索引做两次中值滤波，
+再将选块权重应用到源图重建。这里沿用 OpenFocus 的 `dct` 标识；空间域方差等价于
+正交 DCT 的交流系数能量除以块像素数，但实现没有显式变换或融合 DCT 系数。
+
+右侧、下侧不足整块的像素仍参与计算，输出保持原始尺寸。索引始终为 int32，
+不会在 256 帧处截断；平坦或近似并列块平分权重。有唯一首选的块才采用中值结果。
+中值滤波作用于按输入次序编号的标签，因此多帧重排可能改变结果；它也可能抹去
+小于一致性窗口的清晰区域，可减小 `consistency_window`，设为 1 时关闭平滑。
+
+### DTCWT／双树复小波
+
+实现目录：`algorithms/src/fusion/dtcwt/`，配置为 `FusionOptions.dtcwt`。
+
+使用首层近对称双正交滤波器和后续 Q-shift 双树滤波器，将四个实树的高频子带组合成
+每层六个复方向。低频系数按输入平均；每个高频方向先比较局部幅值最大值，再做
+邻域多数一致性检查，选择复系数并逆变换。三张及以上输入按给定次序逐对融合高频，
+因此保留参考流程的顺序相关性。彩色图的各通道独立变换与重建。
+
+边界延拓和有效层数由引擎处理，支持奇数尺寸与小图，输出恢复到原始大小。
+该方法没有一张能描述所有尺度、方向和通道贡献的空间权重图：C++ 返回空
+`focus_indices` 和 `weights`；Python 对应 `None` 和 `[]`。
+运行时只使用 C++ 和 OpenCV，不调用 Python 的 dtcwt 包。
+
+### GFG-FGF
+
+实现文件：`algorithms/src/fusion/gfgfgf/gfgfgf.cpp`，配置为 `FusionOptions.gfgfgf`。
+
+1. 以 Scharr 梯度平方和的全图均值评分，保留分数达到最大值指定比例的帧。
+2. 计算原图与局部均值图的绝对差，小于等于阈值的响应置零。
+3. 第一遍官方引导滤波平滑响应，候选帧之间比较得到决策图。
+4. 第二遍官方引导滤波细化决策权重，非负归一后加权融合原图。
+
+彩色输入用首图总亮度最大的 B/G/R 通道作评分和引导。无纹理时保留所有帧并等权融合，
+避免空候选或全黑结果。被筛除的帧始终保留原始诊断位置、权重为零；来源索引不会重新编号。
+此实现对应上游优先使用官方引导滤波的路径，未采用其缺少 ximgproc 时的降采样后备实现。
 
 ## 参数
 
@@ -137,15 +193,65 @@ w = mean(a)*I + mean(b)
 
 | 参数 | 默认值 | 范围与含义 |
 |---|---|---|
-| `method` | `GuidedFilter` | `GuidedFilter` 或 `LaplacianPyramid` |
-| `focus_measure` | `ModifiedLaplacian` | `ModifiedLaplacian` 或 `Tenengrad` |
-| `focus_window` | 9 | `[1, 255]` 内的奇数，清晰度统计窗口边长 |
-| `base_radius` | 15 | `[1, 255]`，基础层滤波和基础权重半径，仅引导滤波融合使用 |
+| `method` | `GuidedFilter` | `GuidedFilter`、`LaplacianPyramid`、`Dct`、`Dtcwt`、`Gfgfgf` |
+| `guided_filter` | `GuidedFilterOptions{}` | 双尺度方法的独立配置 |
+| `laplacian_pyramid` | `LaplacianPyramidOptions{}` | 金字塔方法的独立配置 |
+| `dct` | `DctOptions{}` | 块方差方法的独立配置 |
+| `dtcwt` | `DtcwtOptions{}` | 双树复小波方法的独立配置 |
+| `gfgfgf` | `GfgfgfOptions{}` | 梯度筛帧与两阶段引导滤波的独立配置 |
+| `keep_weight_maps` | `false` | 保留所选方法提供的权重诊断；DTCWT 始终为空 |
+
+五组参数各自保存，仅校验和使用当前选中的方法。`FocusOptions` 供 GFF 和金字塔复用，
+这两个方法的 `focus` 对象各自独立。切换方法不会复制其他组参数。
+
+#### `guided_filter`：双尺度引导滤波
+
+| 参数 | 默认值 | 范围与含义 |
+|---|---|---|
+| `focus.measure` | `ModifiedLaplacian` | `ModifiedLaplacian` 或 `Tenengrad` |
+| `focus.window` | 9 | `[1, 255]` 内的奇数，清晰度统计窗口边长 |
+| `base_radius` | 15 | `[1, 255]`，同时用于基础层分解和基础权重滤波 |
 | `detail_radius` | 3 | `[1, 255]`，细节权重半径 |
-| `base_epsilon` | 0.01 | 有限正数，基础权重正则化，仅引导滤波融合使用 |
-| `detail_epsilon` | 0.0001 | 有限正数，细节权重正则化 |
-| `pyramid_levels` | 5 | `[1, 16]`，金字塔层数上限，包含最粗层 |
-| `keep_weight_maps` | `false` | 是否在结果中保留归一化细节权重 |
+| `base_epsilon` | 0.01 | `[1e-6, FLT_MAX]`，基础权重正则化 |
+| `detail_epsilon` | 0.0001 | `[1e-6, FLT_MAX]`，细节权重正则化 |
+
+#### `laplacian_pyramid`：拉普拉斯金字塔
+
+| 参数 | 默认值 | 范围与含义 |
+|---|---|---|
+| `focus.measure` | `ModifiedLaplacian` | `ModifiedLaplacian` 或 `Tenengrad` |
+| `focus.window` | 9 | `[1, 255]` 内的奇数，清晰度统计窗口边长 |
+| `detail_radius` | 3 | `[1, 255]`，细节权重半径 |
+| `detail_epsilon` | 0.0001 | `[1e-6, FLT_MAX]`，细节权重正则化 |
+| `levels` | 5 | `[1, 16]`，金字塔层数上限，包含最粗层；设为 1 时直接单尺度加权 |
+
+例如 `options.guided_filter.focus.window = 7` 只调整双尺度方法；金字塔仍使用自己的窗口。
+要让两者采用相同设置，应分别赋值。现有两方法在输入及清晰度、细节参数相同时，
+返回的细节权重与来源索引一致，融合图仍由各自重建流程决定。
+
+#### `dct`：块方差
+
+| 参数 | 默认值 | 范围与含义 |
+|---|---|---|
+| `block_size` | 8 | `[2, 128]`，方块边长，单位为像素 |
+| `consistency_window` | 7 | `[1, 31]` 内的奇数，块索引中值窗口，单位为块；1 关闭平滑 |
+
+#### `dtcwt`：双树复小波
+
+| 参数 | 默认值 | 范围与含义 |
+|---|---|---|
+| `levels` | 4 | `[1, 16]`，最大分解层数，小图自动限制 |
+| `activity_window` | 3 | `[1, 31]` 内的奇数，同时用于幅值最大值和多数一致性检查 |
+
+#### `gfgfgf`：梯度筛帧与两阶段引导滤波
+
+| 参数 | 默认值 | 范围与含义 |
+|---|---|---|
+| `difference_window` | 7 | `[1, 255]` 内的奇数，局部均值窗口 |
+| `selection_ratio` | 0.15 | `[0, 1]`，筛帧分数相对最大值的比例；0 保留所有输入 |
+| `difference_threshold` | 0.005 | `[0, 1]`，归一化局部差异阈值 |
+| `guided_radius` | 5 | `[1, 255]`，两个阶段共用的官方引导滤波半径 |
+| `guided_epsilon` | 0.3 | `[1e-6, FLT_MAX]`，两个阶段共用的正则项 |
 
 ### `RegistrationOptions`
 
@@ -161,7 +267,8 @@ w = mean(a)*I + mean(b)
 | `ransac_threshold` | 3.0 | 有限正数，RANSAC 误差阈值，单位为工作分辨率像素 |
 | `min_inlier_ratio` | 0.25 | 有限且在 `(0, 1]`，RANSAC 内点最低比例；同时至少需要 6 个内点 |
 
-每个入口检查自己参数对象的所有字段，包括所选方法当前未使用的字段；
+融合入口只检查选中方法的完整配置；未选中方法即使含无效值，也不影响当前计算，切换后会被校验。
+配准入口仍检查 `RegistrationOptions` 的全部字段，包括当前方法未使用的字段。
 纯融合不会检查或执行配准。上述枚举使用 C++ 写法，Python 对应成员名为全大写，
 例如 `FusionMethod.GUIDED_FILTER`、`RegistrationMethod.ECC`、`MotionModel.HOMOGRAPHY`。
 旧参数名的替换见 [接口迁移](sdk.md#接口迁移)。
@@ -171,5 +278,6 @@ w = mean(a)*I + mean(b)
 整个图像栈及多组浮点中间数据驻留内存，目前没有分块或磁盘缓存。噪声、反光、
 曝光差异及配准误差可能影响清晰度判断，边缘可能出现光晕。
 合成测试只能验证基本性质；用于显微镜或工业检测前，应使用实际图像验证质量。
-目前未实现 DCT、DTCWT、GFG-FGF 和 AI 算法。
+当前没有 AI 算法。DCT 的块边界、DTCWT 的顺序与逐通道选择、GFG-FGF 的全局筛帧
+都可能影响特定场景：局部清晰面积很小的帧可能被 GFG-FGF 排除，可将筛选比例设为 0。
 

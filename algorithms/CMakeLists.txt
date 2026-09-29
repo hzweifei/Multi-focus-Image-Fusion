@@ -8,6 +8,12 @@ add_library(mif_core ${_mif_library_type}
     # 公开接口和完整处理流程。
     include/mif/fusion.hpp
     include/mif/fusion_options.hpp
+    include/mif/fusion/focus_options.hpp
+    include/mif/fusion/guided_filter_options.hpp
+    include/mif/fusion/laplacian_pyramid_options.hpp
+    include/mif/fusion/dct_options.hpp
+    include/mif/fusion/dtcwt_options.hpp
+    include/mif/fusion/gfgfgf_options.hpp
     include/mif/registration.hpp
     include/mif/registration_options.hpp
     include/mif/pipeline.hpp
@@ -19,14 +25,26 @@ add_library(mif_core ${_mif_library_type}
     src/common/image_stack.hpp
     src/common/image_stack.cpp
     # 融合入口、融合专用工具及具体方法。
-    src/fusion/fusion.hpp
     src/fusion/fusion.cpp
-    src/fusion/focus_measure.hpp
-    src/fusion/focus_measure.cpp
-    src/fusion/weight_map.hpp
-    src/fusion/weight_map.cpp
-    src/fusion/guided_filter.cpp
-    src/fusion/laplacian_pyramid.cpp
+    src/fusion/method_result.hpp
+    src/fusion/common/focus_measure.hpp
+    src/fusion/common/focus_measure.cpp
+    src/fusion/common/weight_map.hpp
+    src/fusion/common/weight_map.cpp
+    src/fusion/common/guided_filter.hpp
+    src/fusion/common/guided_filter.cpp
+    src/fusion/guided_filter/guided_filter.hpp
+    src/fusion/guided_filter/guided_filter.cpp
+    src/fusion/laplacian_pyramid/laplacian_pyramid.hpp
+    src/fusion/laplacian_pyramid/laplacian_pyramid.cpp
+    src/fusion/dct/dct.hpp
+    src/fusion/dct/dct.cpp
+    src/fusion/dtcwt/dtcwt.hpp
+    src/fusion/dtcwt/dtcwt.cpp
+    src/fusion/dtcwt/transform.hpp
+    src/fusion/dtcwt/transform.cpp
+    src/fusion/gfgfgf/gfgfgf.hpp
+    src/fusion/gfgfgf/gfgfgf.cpp
     # 配准入口及具体变换估计方法。
     src/registration/registration.hpp
     src/registration/registration.cpp

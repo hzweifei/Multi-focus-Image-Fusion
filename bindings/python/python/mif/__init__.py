@@ -4,6 +4,9 @@ fuse/fuse_detailed 只执行融合，register_images 只执行配准；需要连
 调用 register_and_fuse，或把 register_images 返回的 images 显式传给 fuse。
 两个阶段分别使用 RegistrationOptions 和 FusionOptions，均不使用 AI 模型。
 
+融合参数按方法保存：FusionOptions 的 guided_filter、laplacian_pyramid、dct、
+dtcwt、gfgfgf 各自持有独立配置；仅选中方法的配置参与计算和校验。
+
 迁移：原 Alignment 已移除。RegistrationOptions.method 使用 RegistrationMethod，
 ECC 的平移/仿射/单应性改由 motion_model 选择 MotionModel；SIFT 固定求解单应性。
 原 FusionOptions.alignment_* 数值字段去掉此前缀后移到 RegistrationOptions。
@@ -17,9 +20,15 @@ _dll_directory = os.add_dll_directory(str(Path(__file__).resolve().parent)) if o
 
 import numpy as np
 from . import _mif
-from ._mif import FocusMeasure, FusionMethod, FusionOptions, MotionModel, RegistrationMethod, RegistrationOptions
+from ._mif import (
+    FocusMeasure, FocusOptions, FusionMethod, FusionOptions, GuidedFilterOptions,
+    LaplacianPyramidOptions, DctOptions, DtcwtOptions, GfgfgfOptions,
+    MotionModel, RegistrationMethod, RegistrationOptions,
+)
 
-__all__ = ["FocusMeasure", "FusionMethod", "FusionOptions", "MotionModel", "RegistrationMethod", "RegistrationOptions",
+__all__ = ["FocusMeasure", "FocusOptions", "FusionMethod", "FusionOptions", "GuidedFilterOptions",
+           "LaplacianPyramidOptions", "DctOptions", "DtcwtOptions", "GfgfgfOptions",
+           "MotionModel", "RegistrationMethod", "RegistrationOptions",
            "fuse", "fuse_detailed", "register_images", "register_and_fuse"]
 __version__ = "0.1.0"
 
@@ -48,10 +57,27 @@ def fuse(images, options=None):
     images: H×W 灰度或 H×W×3 BGR 数组序列，精度为 uint8、uint16 或
         float32；float32 必须全部为 [0, 1] 范围内的有限数值。
     options: FusionOptions 参数对象；传入 None 时为本次调用创建默认参数。
+        method 选择 GUIDED_FILTER、LAPLACIAN_PYRAMID、DCT、DTCWT 或 GFGFGF。
+        guided_filter、laplacian_pyramid、dct、dtcwt、gfgfgf 分别保存方法参数。
+        例如 options.guided_filter.focus.window = 7，或
+        options.laplacian_pyramid.levels = 4。两个 focus 独立保存 measure 和 window。
+        guided_filter 还包含 base_radius、detail_radius、base_epsilon、detail_epsilon；
+        laplacian_pyramid 包含 detail_radius、detail_epsilon 和 levels。
+        dct 包含 block_size、consistency_window，实际按块方差选帧。
+        dtcwt 包含 levels、activity_window，在六方向复小波系数域融合。
+        gfgfgf 包含 difference_window、selection_ratio、difference_threshold、
+        guided_radius、guided_epsilon，进行筛帧与两阶段官方引导滤波。
+        所有引导滤波 epsilon 须在 [1e-6, float32 最大有限值]，防止平坦区
+        数值退化或 float 转换溢出；超出范围抛出 ValueError。
+
+    嵌套属性读取返回内部对象，修改直接作用于所属配置；引用会保留父对象的寿命。
+    整体赋值采用值复制，例如 options.guided_filter = GuidedFilterOptions()。
+    之后修改赋值来源不会改变目标配置。切换 method 不会清空另一方法的设置。
 
     接受非连续切片和只读数组。C++ 处理前复制输入并释放 GIL，处理结束后
     恢复 GIL。输出保留输入尺寸、通道和精度，输入数组不会被修改。
-    本入口只校验融合参数，不执行配准或裁剪；需要配准时先调用 register_images。
+    本入口只计算并校验选中融合方法的参数，其他方法中的非法值不影响本次调用，
+    切换到该方法后会被拒绝。不执行配准或裁剪；需要配准时先调用 register_images。
 
     输入类型错误抛出 TypeError，非法图像或参数抛出 ValueError，运行失败抛出
     RuntimeError。配准参数不能传给本函数。
@@ -63,9 +89,12 @@ def fuse_detailed(images, options=None):
     """使用与 fuse 相同的输入约定，仅返回融合结果与诊断信息。
 
     image: 融合图像，精度和通道数与输入一致。
-    focus_indices: int32 数组，每个位置记录从 0 开始的源图像索引。
-    weights: 设置 options.keep_weight_maps = True 时返回归一化细节权重
-        数组列表；默认返回空列表。
+    focus_indices: int32 数组，每个位置记录从 0 开始的原始源图像索引。
+        DTCWT 在多个尺度与方向选择系数，无法对应单一来源图，返回 None。
+    weights: 设置 options.keep_weight_maps = True 时返回方法提供的归一化权重。
+        GFF/金字塔为细节权重，DCT 为选块权重，GFG-FGF 为最终融合权重；
+        经过 GFG-FGF 筛选排除的原始输入仍占一个位置、权重全零。
+        默认以及 DTCWT 方法均返回空列表。
 
     字典仅含 image、focus_indices、weights 三个键；本阶段没有配准元数据。
     所有返回数组在调用结束后仍持有有效存储，异常约定与 fuse 相同。

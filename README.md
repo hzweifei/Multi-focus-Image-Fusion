@@ -5,7 +5,9 @@
 
 ## 已实现
 
-- 引导滤波双尺度融合、拉普拉斯金字塔融合。
+- GFF 引导滤波、DCT 块方差、DTCWT 双树复小波、GFG-FGF 及拉普拉斯金字塔融合，
+  每种方法拥有独立参数、实现目录和 Qt 参数页。
+- 引导滤波使用 OpenCV `ximgproc` 官方实现。
 - 改进拉普拉斯和 Tenengrad 清晰度指标。
 - 可选 SIFT + RANSAC 单应性配准，以及支持平移 / 仿射 / 单应性模型的 ECC 配准，裁剪共同有效区域。
 - 独立的配准和融合接口、参数与结果，可分步调用或通过组合入口连续执行。
@@ -26,7 +28,13 @@
 algorithms/       独立 C++ 算法库，include/mif/ 为公开接口
   src/pipeline.cpp   组合独立的配准与融合入口
   src/common/        共用输入校验、归一化、灰度转换与进度工具
-  src/fusion/        融合方法、清晰度计算与权重处理
+  src/fusion/        统一入口，每种方法独立一个目录
+    guided_filter/   GFF 基础层与细节层融合
+    laplacian_pyramid/ 拉普拉斯金字塔融合
+    dct/             块方差选择与一致性检查
+    dtcwt/           双树复小波变换与系数融合
+    gfgfgf/          梯度筛帧与两阶段引导滤波
+    common/          融合方法按需复用的清晰度、引导滤波和权重算子
   src/registration/  配准方法与共同区域处理
 apps/desktop/     Qt 桌面应用
 bindings/python/  nanobind 扩展与 Python 包
@@ -42,7 +50,8 @@ docs/             架构、算法、构建和参考文档
 
 ## 构建
 
-准备 CMake 3.21+、C++17 编译器、OpenCV 4.4+ 和 Qt 6 或 Qt 5.15 开发包。
+准备 CMake 3.21+、C++17 编译器、含 `opencv_contrib/ximgproc` 的 OpenCV 4.4+
+和 Qt 6 或 Qt 5.15 开发包。vcpkg 对应 `opencv4[contrib]:x64-windows`。
 
 ```sh
 git submodule update --init --recursive
@@ -81,13 +90,14 @@ toolchain 指定。[详细构建与运行方法](docs/build.md)
    选择 ECC 后，再选择“平移 / 仿射 / 单应性”变换模型，并调整迭代上限和收敛阈值。
    SIFT 使用单应性变换，显示特征点上限、匹配距离比、RANSAC 阈值和最低内点比。
    两类方法共用“工作最长边”，用于限制估计变换的分辨率，最终仍在原始分辨率上对齐。
-3. 切换到“融合”页选择融合方法并调整参数，默认使用引导滤波。
+3. 切换到“融合”页，从五种方法中选择一项，仅显示该方法自己的参数。
+   各方法分别保存配置，切换时保留各自的值。
 4. 点击“开始融合”，在右侧预览结果；通过“导出结果”保存。
    在任一预览中滚轮缩放、拖动或双击，另一侧会同步；切换输入图片保留当前对比位置。
 
 参数页可上下滚动，“开始融合”按钮固定在页外。滚轮经过参数控件时只滚动页面，
 不会误改数值或方法。切换配准方法会保留已选模型和数值；“恢复默认参数”重置配准数值参数，
-保留当前配准方法和 ECC 模型。融合页可用“恢复融合默认值”恢复设置。
+保留当前配准方法和 ECC 模型。融合页的恢复按钮只重置当前方法的设置，保留其他方法的参数。
 
 合成示例生成方法见 [data/samples](data/samples/README.md)。
 配准失败会明确报错，不会静默跳过图片。来源索引不代表物理深度。
@@ -103,6 +113,8 @@ mif::RegistrationOptions registration;
 registration.method = mif::RegistrationMethod::Ecc;
 registration.motion_model = mif::MotionModel::Affine;
 mif::FusionOptions fusion;
+fusion.guided_filter.focus.window = 9;
+fusion.guided_filter.detail_radius = 3;
 
 auto result = mif::registerAndFuse(images, registration, fusion); // images: std::vector<cv::Mat>
 cv::Mat fused = result.fusion.image;
@@ -123,6 +135,8 @@ registration.method = mif.RegistrationMethod.ECC
 registration.motion_model = mif.MotionModel.AFFINE
 fusion = mif.FusionOptions()
 fusion.method = mif.FusionMethod.LAPLACIAN_PYRAMID
+fusion.laplacian_pyramid.levels = 5
+fusion.laplacian_pyramid.focus.window = 9
 result = mif.register_and_fuse([image_near, image_far], registration, fusion)
 fused = result["image"]  # NumPy；彩色为 BGR
 # Python 组合结果为平坦字典，另有 focus_indices、weights、crop、transforms。
@@ -132,8 +146,11 @@ fused = result["image"]  # NumPy；彩色为 BGR
 `mif.fuse_detailed(images, fusion)`。独立配准使用 `mif.register_images(images, registration)`，
 返回 `images`、`crop`、`transforms` 字典。
 
-`method` 选择算法，`motion_model` 只控制 ECC 的变换模型；SIFT 固定使用单应性。
-旧版 `Alignment` 枚举和含配准参数的 `FusionOptions` 调用需调整；SDK 调用方须重新编译。
+配准的 `method` 选择算法，`motion_model` 只控制 ECC 的变换模型；SIFT 固定使用单应性。
+融合参数位于 `guided_filter`、`laplacian_pyramid`、`dct`、`dtcwt`、`gfgfgf`，
+只校验和使用当前选中的一组。DTCWT 不提供单一空间来源图，Python 的
+`focus_indices` 为 `None`，`weights` 为空列表。
+旧版扁平融合参数、`Alignment` 枚举和含配准参数的 `FusionOptions` 调用需调整；SDK 调用方须重新编译。
 具体替换方式与整数中间图像的舍入变化见 [接口迁移](docs/sdk.md#接口迁移)。
 
 更多内容：[架构](docs/architecture.md) · [算法与参数](docs/algorithm.md) ·
@@ -142,5 +159,5 @@ fused = result["image"]  # NumPy；彩色为 BGR
 自有 C++、Python 和构建代码提供中文说明；建议按
 [算法模块导航](algorithms/README.md#阅读顺序) 从公开接口开始阅读。
 
-当前版本整栈驻留内存，尚未实现大图分块、批量任务、DCT/DTCWT/GFG-FGF 或安装包。
+当前版本整栈驻留内存，尚未实现大图分块、批量任务或安装包。
 实际显微和工业图像的效果仍需使用真实采集数据评估。
