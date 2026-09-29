@@ -44,16 +44,16 @@ flowchart LR
 - 深度为 `CV_8U`、`CV_16U` 或 `CV_32F`；浮点值必须有限且位于 `[0, 1]`。
 - 允许非连续 ROI；算法不修改输入。调用期间，调用者须保持输入有效，且不从其他线程修改它。
 
-记原图为 $X_i$，归一化工作图为 $I_i$：
+记原图为 $`X_i`$，归一化工作图为 $`I_i`$：
 
-$$
+```math
 I_i =
 \begin{cases}
-X_i/255, & \text{8 位无符号整数}\\
-X_i/65535, & \text{16 位无符号整数}\\
+X_i/255, & \text{uint8} \\
+X_i/65535, & \text{uint16} \\
 X_i, & \text{float32}
 \end{cases}
-$$
+```
 
 工作图分配为独立的 `CV_32F` 缓冲区。DTCWT 变换内部另用双精度，方法出口回到 `CV_32F`。融合完成后把像素裁到 `[0, 1]`，再恢复输入的深度和通道数；保持位深不等于保留输入像素值，重采样、加权和整数舍入都会改变数值。
 
@@ -77,42 +77,61 @@ $$
 
 默认方法为 `None`，默认 ECC 模型为 `Translation`。SIFT 忽略 `motion_model` 的合法取值，但所有方法都会拒绝非法枚举。
 
-用参考坐标 $(x,y)$ 表示源图采样位置 $(x',y')$，三个 ECC 模型分别为：
+用参考坐标 $`(x,y)`$ 表示源图采样位置 $`(x',y')`$，三个 ECC 模型分别为：
 
-$$
-\text{平移：}\quad x'=x+t_x,\qquad y'=y+t_y
-$$
+**平移模型：**
 
-$$
-\text{仿射：}\quad
-\begin{bmatrix}x'\\y'\end{bmatrix}
-=
-\begin{bmatrix}a_{11}&a_{12}&t_x\\a_{21}&a_{22}&t_y\end{bmatrix}
-\begin{bmatrix}x\\y\\1\end{bmatrix}
-$$
+```math
+\begin{aligned}
+x' &= x+t_x \\
+y' &= y+t_y
+\end{aligned}
+```
 
-$$
-\text{单应性：}\quad
-x'=\frac{h_{11}x+h_{12}y+h_{13}}{h_{31}x+h_{32}y+1},\qquad
-y'=\frac{h_{21}x+h_{22}y+h_{23}}{h_{31}x+h_{32}y+1}
-$$
+**仿射模型：**
+
+```math
+\begin{bmatrix}
+x' \\
+y'
+\end{bmatrix}
+= \begin{bmatrix}
+a_{11} & a_{12} & t_x \\
+a_{21} & a_{22} & t_y
+\end{bmatrix}
+\begin{bmatrix}
+x \\
+y \\
+1
+\end{bmatrix}
+```
+
+**单应性模型：**
+
+```math
+\begin{aligned}
+x' &= \frac{h_{11}x+h_{12}y+h_{13}}{h_{31}x+h_{32}y+1} \\
+y' &= \frac{h_{21}x+h_{22}y+h_{23}}{h_{31}x+h_{32}y+1}
+\end{aligned}
+```
 
 允许更多自由度能描述更复杂的全局变化，也需要图像内容提供足够约束。单应性仍是一张全局变换，不能表达不同物体各自移动或明显的深度视差。
 
 ### 2.2 ECC：最大化图像相关性
 
-ECC 直接比较参考图 $T$ 与变换后的源图 $S(W_\theta(x))$，调整运动参数 $\theta$ 提高相关性。把参与比较的像素减去各自均值，记为 $\tilde T$、$\tilde S_\theta$，其目标可写为：
+ECC 直接比较参考图 $`T`$ 与变换后的源图 $`S(W_\theta(x))`$，调整运动参数 $`\theta`$ 提高相关性。把参与比较的像素减去各自均值，记为 $`\tilde{T}`$、$`\tilde{S}_\theta`$，其目标可写为：
 
-$$
-\theta^*=\arg\max_\theta
-\rho(\theta),\qquad
-\rho(\theta)=
-\frac{\sum_{x\in\Omega_\theta}\tilde T(x)\tilde S_\theta(x)}
-{\sqrt{\sum_{x\in\Omega_\theta}\tilde T(x)^2}
- \sqrt{\sum_{x\in\Omega_\theta}\tilde S_\theta(x)^2}}
-$$
+```math
+\begin{aligned}
+\theta^* &= \underset{\theta}{\operatorname{arg\,max}}\;\rho(\theta) \\
+\rho(\theta) &=
+\frac{\sum_{x\in\Omega_\theta}\tilde{T}(x)\tilde{S}_\theta(x)}
+{\sqrt{\sum_{x\in\Omega_\theta}\tilde{T}(x)^2}
+ \sqrt{\sum_{x\in\Omega_\theta}\tilde{S}_\theta(x)^2}}
+\end{aligned}
+```
 
-$\Omega_\theta$ 表示当前变换下用于比较的有效位置。中心化与归一化降低了整体亮度偏移和增益变化的影响，但局部反光、失焦差异、饱和像素仍会改变匹配依据。迭代由 OpenCV `findTransformECC` 完成。[ECC 论文][ecc-paper]、[OpenCV 接口约定][opencv-ecc]。
+$`\Omega_\theta`$ 表示当前变换下用于比较的有效位置。中心化与归一化降低了整体亮度偏移和增益变化的影响，但局部反光、失焦差异、饱和像素仍会改变匹配依据。迭代由 OpenCV `findTransformECC` 完成。[ECC 论文][ecc-paper]、[OpenCV 接口约定][opencv-ecc]。
 
 本项目的执行步骤：
 
@@ -134,47 +153,48 @@ SIFT 在不同高斯平滑尺度下构建尺度空间，通过高斯差分（DoG
 
 1. 把工作灰度图临时转换为 8 位用于 SIFT；参考特征只提取一次。高位深原图仍保留给最终重采样。
 2. 对每个参考描述子，在源图中寻找 L2 距离最近的两个描述子。
-3. 只保留满足 $d_1 < r\,d_2$ 的匹配，其中 $r=\texttt{match_ratio}$。次近邻距离为零或距离非有限时丢弃。
+3. 只保留满足 $`d_1 < r\,d_2`$ 的匹配，其中 $`r`$ 对应参数 `match_ratio`。次近邻距离为零或距离非有限时丢弃。
 4. 按描述子距离排序，去掉重复源特征及双方重复坐标，至少保留 6 个位置不重复的对应点。
 5. RANSAC 从候选对应点中估计单应性，按工作图像上的重投影误差筛内点，再由 OpenCV 优化模型。
 6. 至少需要 6 个内点，内点比例达到 `min_inlier_ratio`，并检查双方内点的空间分布。
 
-对参考点 $p_j$ 和源图点 $q_j$，RANSAC 使用的误差是：
+对参考点 $`p_j`$ 和源图点 $`q_j`$，RANSAC 使用的误差是：
 
-$$
+```math
 e_j=\left\|\pi(Hp_j)-q_j\right\|_2
-$$
+```
 
-其中 $\pi$ 表示除以齐次坐标第三项。`ransac_threshold` 的单位是**工作分辨率像素**。RANSAC 使用 OpenCV 默认的 2000 次迭代上限和 0.995 置信度，不使用 ECC 的 `iterations`。
+其中 $`\pi`$ 表示除以齐次坐标第三项。`ransac_threshold` 的单位是**工作分辨率像素**。RANSAC 使用 OpenCV 默认的 2000 次迭代上限和 0.995 置信度，不使用 ECC 的 `iterations`。
 
-空间分布检查要求：内点坐标协方差的较小特征值至少为 $1$，且不小于较大特征值的 $10^{-3}$；凸包面积至少为 $\max(16,10^{-4}WH)$。这些条件用于拒绝集中在一点、很小区域或近似一条直线上的匹配。
+空间分布检查要求：内点坐标协方差的较小特征值至少为 $`1`$，且不小于较大特征值的 $`10^{-3}`$；凸包面积至少为 $`\max(16,10^{-4}WH)`$。这些条件用于拒绝集中在一点、很小区域或近似一条直线上的匹配。
 
 有足够共同特征时，SIFT 可以估计比单位矩阵初始化的 ECC 更大范围的几何变化。严重失焦会减少共同特征，重复纹理可能产生一致但错误的匹配；内点比例高也不保证整幅图像都能由同一单应性准确描述。当前匹配采用单向两近邻筛选，没有额外的双向交叉匹配检查。
 
 ### 2.4 工作分辨率、矩阵方向与共同裁剪
 
-**估计分辨率。** 令缩放比例为 $\min(1,\texttt{max_size}/\max(W,H))$，横纵尺寸分别取整。不会放大小图；开启配准后，工作图的两边均须至少为 16，否则报错。
+**估计分辨率。** 令缩放比例为 $`\min(1,L_{\max}/\max(W,H))`$，其中 $`L_{\max}`$ 对应参数 `max_size`；横纵尺寸分别取整。不会放大小图；开启配准后，工作图的两边均须至少为 16，否则报错。
 
-**坐标换算。** 内部求解器统一返回“参考工作坐标 → 源图工作坐标”的双精度 3×3 矩阵 $H_{\mathrm{work}}$。按 OpenCV resize 的像素中心约定，原图到工作图的映射为：
+**坐标换算。** 内部求解器统一返回“参考工作坐标 → 源图工作坐标”的双精度 3×3 矩阵 $`H_{\mathrm{work}}`$。按 OpenCV resize 的像素中心约定，原图到工作图的映射为：
 
-$$
-R=
+```math
+\begin{aligned}
+R &=
 \begin{bmatrix}
-s_x&0&(s_x-1)/2\\
-0&s_y&(s_y-1)/2\\
-0&0&1
-\end{bmatrix},
-\qquad
-H=R^{-1}H_{\mathrm{work}}R
-$$
+s_x & 0 & (s_x-1)/2 \\
+0 & s_y & (s_y-1)/2 \\
+0 & 0 & 1
+\end{bmatrix} \\
+H &= R^{-1}H_{\mathrm{work}}R
+\end{aligned}
+```
 
-这里 $s_x=W_w/W$、$s_y=H_w/H$ 使用取整后的真实比例，因此兼容奇数尺寸。几何检查会拒绝非有限、不可逆、方向翻转或投影分母在图像内接近零的矩阵。
+这里 $`s_x=W_w/W`$、$`s_y=H_w/H`$ 使用取整后的真实比例，因此兼容奇数尺寸。几何检查会拒绝非有限、不可逆、方向翻转或投影分母在图像内接近零的矩阵。
 
-**重采样。** 每张非参考图只在原始分辨率上执行一次双线性重采样，调用 `warpAffine` 或 `warpPerspective`，并设置 `WARP_INVERSE_MAP`。输出坐标沿 $H$ 查找源图位置：
+**重采样。** 每张非参考图只在原始分辨率上执行一次双线性重采样，调用 `warpAffine` 或 `warpPerspective`，并设置 `WARP_INVERSE_MAP`。输出坐标沿 $`H`$ 查找源图位置：
 
-$$
+```math
 J_i(x,y)=I_i\!\left(\pi(H_i[x,y,1]^T)\right)
-$$
+```
 
 **去掉无效边缘。** 对全 1 浮点掩码执行相同的变换和插值；覆盖值至少为 `0.9999` 才视为有效。取所有输入有效掩码的交集，在其中寻找面积最大的轴对齐内接矩形。它不会包含插值混入边界补零的角落；矩形短边小于 8 时明确失败。
 
@@ -182,7 +202,7 @@ $$
 
 - `crop` 位于**第一张原图**的坐标系中。
 - `transforms[i]` 为 `CV_32F`，映射**参考原图坐标 → 第 i 张原图坐标**；第一张是单位变换。
-- 配准输出图的像素 $(u,v)$ 对应参考原图 $(u+\texttt{crop.x},v+\texttt{crop.y})$。先加裁剪偏移，再应用 `transforms[i]`；3×3 变换还需做齐次除法。
+- 配准输出图的像素 $`(u,v)`$ 对应参考原图 $`(u+c_x,v+c_y)`$，其中 $`c_x`$、$`c_y`$ 分别对应 `crop.x`、`crop.y`。先加裁剪偏移，再应用 `transforms[i]`；3×3 变换还需做齐次除法。
 - `None` 返回整图 `crop` 和 2×3 单位矩阵，即使 `motion_model` 设为合法的 `Homography` 也一样。
 
 矩阵没有隐含裁剪偏移，不能直接把裁剪后坐标代进去。求解失败会附带从 1 开始的图片序号，不会静默改用单位矩阵或其他方法。
@@ -207,32 +227,33 @@ $$
 
 以下步骤由方法按需复用。GFF 和拉普拉斯金字塔共用全部清晰度流程；DCT 只复用决策与归一化工具；GFG-FGF 自行产生响应，再复用决策和引导权重；DTCWT 在复系数域独立执行。
 
-下文记 $I_i$ 为第 $i$ 张归一化图像，$g_i$ 为评分或引导用的单通道图，$M_w$ 为 $w\times w$ 局部均值，$N$ 为输入张数。
+下文记 $`I_i`$ 为第 $`i`$ 张归一化图像，$`g_i`$ 为评分或引导用的单通道图，$`M_w`$ 为 $`w\times w`$ 局部均值，$`N`$ 为输入张数。
 
 ### 3.1 清晰度指标与初始决策
 
 GFF 和金字塔将 BGR 转灰度后评分，灰度输入直接使用原通道。可选指标为：
 
-$$
-S_i^{ML}=M_w\left(|D_{xx}g_i|+|D_{yy}g_i|\right)
-$$
+```math
+S_i^{\mathrm{ML}}=M_w\left(\lvert D_{xx}g_i\rvert+\lvert D_{yy}g_i\rvert\right)
+```
 
-$D_{xx}$、$D_{yy}$ 分别用 `[-1, 2, -1]` 及其转置计算。两个方向先取绝对值再相加，避免正负抵消。
+$`D_{xx}`$、$`D_{yy}`$ 分别用 `[-1, 2, -1]` 及其转置计算。两个方向先取绝对值再相加，避免正负抵消。
 
-$$
-S_i^{TG}=M_w\left((\operatorname{Sobel}_x g_i)^2+
+```math
+S_i^{\mathrm{TG}}=M_w\left((\operatorname{Sobel}_x g_i)^2+
                            (\operatorname{Sobel}_y g_i)^2\right)
-$$
+```
 
 Tenengrad 使用 3×3 Sobel 核。两种指标均用局部均值减小零散决策，滤波边界采用 OpenCV 默认的 `BORDER_REFLECT_101`。较大窗口会把更宽的区域一起判断，因此可能跨过真实的焦点分界。
 
 公共决策函数把近似并列的最大响应共同选中：
 
-$$
-m_i(x)=\mathbf{1}\!\left[S_i(x)\ge \max_j S_j(x)-10^{-8}\right],
-\qquad
-P_i(x)=\frac{m_i(x)}{\sum_j m_j(x)}
-$$
+```math
+\begin{aligned}
+m_i(x) &= \mathbf{1}\!\left[S_i(x)\ge \max_j S_j(x)-10^{-8}\right] \\
+P_i(x) &= \frac{m_i(x)}{\sum_j m_j(x)}
+\end{aligned}
+```
 
 平坦区域等权，不强制选择第一张。这个规则也用于 DCT 的块方差和 GFG-FGF 的响应；DTCWT 使用自己的复系数选择规则。
 
@@ -247,26 +268,27 @@ $$
 
 ### 3.2 引导滤波与权重归一化
 
-引导滤波用图像结构约束决策图的平滑。对引导图 $g$、待滤波图 $p$，在每个半径为 $r$ 的窗口内估计局部线性模型：
+引导滤波用图像结构约束决策图的平滑。对引导图 $`g`$、待滤波图 $`p`$，在每个半径为 $`r`$ 的窗口内估计局部线性模型：
 
-$$
-a=\frac{M_{2r+1}(gp)-M_{2r+1}(g)M_{2r+1}(p)}
-        {M_{2r+1}(g^2)-M_{2r+1}(g)^2+\epsilon},
-\qquad
-b=M_{2r+1}(p)-aM_{2r+1}(g)
-$$
+```math
+\begin{aligned}
+a &= \frac{M_{2r+1}(gp)-M_{2r+1}(g)M_{2r+1}(p)}
+          {M_{2r+1}(g^2)-M_{2r+1}(g)^2+\epsilon} \\
+b &= M_{2r+1}(p)-aM_{2r+1}(g)
+\end{aligned}
+```
 
-$$
-GF(g,p;r,\epsilon)=M_{2r+1}(a)\,g+M_{2r+1}(b)
-$$
+```math
+\operatorname{GF}(g,p;r,\epsilon)=M_{2r+1}(a)\,g+M_{2r+1}(b)
+```
 
-$\epsilon$ 抑制局部斜率过大，单位与归一化强度的平方一致。实现调用 `cv::ximgproc::guidedFilter`，输出深度为 `CV_32F`，在完整分辨率上计算；依赖 opencv_contrib 的 `ximgproc`。[原论文][guided-paper]、[OpenCV 接口][opencv-guided]。
+$`\epsilon`$ 抑制局部斜率过大，单位与归一化强度的平方一致。实现调用 `cv::ximgproc::guidedFilter`，输出深度为 `CV_32F`，在完整分辨率上计算；依赖 opencv_contrib 的 `ximgproc`。[原论文][guided-paper]、[OpenCV 接口][opencv-guided]。
 
 作为权重使用时，先把滤波结果裁到 `[0, 1]`，再跨候选图像归一化：
 
-$$
+```math
 W_i=\frac{\max(w_i,0)}{\sum_j\max(w_j,0)}
-$$
+```
 
 若分母不大于 `1e-12`，该位置对当前候选图像均分权重。GFG-FGF 的第一遍滤波处理的是响应，允许负值；到第二遍生成权重时才裁剪。
 
@@ -282,25 +304,29 @@ $$
 
 源码：[guided_filter.cpp](../algorithms/src/fusion/guided_filter/guided_filter.cpp)。配置：`FusionOptions.guided_filter`。
 
-先按第 3 节生成清晰度决策 $P_i$，再分解输入：
+先按第 3 节生成清晰度决策 $`P_i`$，再分解输入：
 
-$$
-B_i=M_{2r_b+1}(I_i),\qquad D_i=I_i-B_i
-$$
+```math
+\begin{aligned}
+B_i &= M_{2r_b+1}(I_i) \\
+D_i &= I_i-B_i
+\end{aligned}
+```
 
-基础层 $B_i$ 保存缓慢变化的色调，细节层 $D_i$ 保存局部变化。分别用两组引导参数优化同一决策图，裁剪、归一化后得到 $W_i^B$、$W_i^D$：
+基础层 $`B_i`$ 保存缓慢变化的色调，细节层 $`D_i`$ 保存局部变化。分别用两组引导参数优化同一决策图，裁剪、归一化后得到 $`W_i^B`$、$`W_i^D`$：
 
-$$
-W_i^B=\mathcal N\!\left(\operatorname{clip}(GF(g_i,P_i;r_b,\epsilon_b))\right),
-\qquad
-W_i^D=\mathcal N\!\left(\operatorname{clip}(GF(g_i,P_i;r_d,\epsilon_d))\right)
-$$
+```math
+\begin{aligned}
+W_i^B &= \mathcal{N}\!\left(\operatorname{clip}(\operatorname{GF}(g_i,P_i;r_b,\epsilon_b))\right) \\
+W_i^D &= \mathcal{N}\!\left(\operatorname{clip}(\operatorname{GF}(g_i,P_i;r_d,\epsilon_d))\right)
+\end{aligned}
+```
 
-$$
+```math
 F=\sum_i W_i^B B_i+\sum_i W_i^D D_i
-$$
+```
 
-这里 $\mathcal N$ 表示跨输入归一化。同一组标量权重应用于全部 BGR 通道。`base_radius` 同时控制基础层均值分解和基础权重滤波；细节权重有独立的半径与正则项。
+这里 $`\mathcal{N}`$ 表示跨输入归一化。同一组标量权重应用于全部 BGR 通道。`base_radius` 同时控制基础层均值分解和基础权重滤波；细节权重有独立的半径与正则项。
 
 | 字段 | 默认值 | 范围与作用 |
 |---|---|---|
@@ -316,28 +342,33 @@ $$
 
 源码：[laplacian_pyramid.cpp](../algorithms/src/fusion/laplacian_pyramid/laplacian_pyramid.cpp)。配置：`FusionOptions.laplacian_pyramid`。这是本项目额外提供的方法。
 
-先生成全分辨率细节权重 $W_i^0$。图像和权重分别通过 `pyrDown` 构建高斯金字塔：
+先生成全分辨率细节权重 $`W_i^0`$。图像和权重分别通过 `pyrDown` 构建高斯金字塔：
 
-$$
-G_i^0=I_i,\quad G_i^{k+1}=\operatorname{down}(G_i^k),
-\qquad W_i^{k+1}=\operatorname{down}(W_i^k)
-$$
+```math
+\begin{aligned}
+G_i^0 &= I_i \\
+G_i^{k+1} &= \operatorname{down}(G_i^k) \\
+W_i^{k+1} &= \operatorname{down}(W_i^k)
+\end{aligned}
+```
 
 非最粗层的拉普拉斯频带为：
 
-$$
+```math
 L_i^k=G_i^k-\operatorname{up}(G_i^{k+1})
-$$
+```
 
-最粗层直接使用 $L_i^{K-1}=G_i^{K-1}$。每层按实际权重和融合：
+最粗层直接使用 $`L_i^{K-1}=G_i^{K-1}`$。每层按实际权重和融合：
 
-$$
-\bar L^k=\frac{\sum_i W_i^k L_i^k}{\max(\sum_i W_i^k,10^{-12})},
-\qquad
-F^{K-1}=\bar L^{K-1},\quad F^k=\operatorname{up}(F^{k+1})+\bar L^k
-$$
+```math
+\begin{aligned}
+\bar{L}^k &= \frac{\sum_i W_i^k L_i^k}{\max(\sum_i W_i^k,10^{-12})} \\
+F^{K-1} &= \bar{L}^{K-1} \\
+F^k &= \operatorname{up}(F^{k+1})+\bar{L}^k
+\end{aligned}
+```
 
-最后取 $F^0$。每层显式记录尺寸，奇数宽高向上取整下采样，重建时恢复准确尺寸。逐张构建和累加图像金字塔，避免同时持有全部输入的金字塔。
+最后取 $`F^0`$。每层显式记录尺寸，奇数宽高向上取整下采样，重建时恢复准确尺寸。逐张构建和累加图像金字塔，避免同时持有全部输入的金字塔。
 
 | 字段 | 默认值 | 范围与作用 |
 |---|---|---|
@@ -352,19 +383,19 @@ $$
 
 源码：[dct.cpp](../algorithms/src/fusion/dct/dct.cpp)。配置：`FusionOptions.dct`。
 
-接口沿用 OpenFocus 的 `Dct` 标识，实际实现是**空间域块方差融合**。它没有显式计算或融合 DCT 系数。对灰度块 $B$：
+接口沿用 OpenFocus 的 `Dct` 标识，实际实现是**空间域块方差融合**。它没有显式计算或融合 DCT 系数。对灰度块 $`B`$：
 
-$$
-V_i(B)=\frac{1}{|B|}\sum_{x\in B}(g_i(x)-\mu_i(B))^2
-$$
+```math
+V_i(B)=\frac{1}{\lvert B\rvert}\sum_{x\in B}(g_i(x)-\mu_i(B))^2
+```
 
 若对该块采用正交归一化 DCT，Parseval 等式给出：
 
-$$
-V_i(B)=\frac{1}{|B|}\sum_{\text{非 DC 系数}} |C_i|^2
-$$
+```math
+V_i(B)=\frac{1}{\lvert B\rvert}\sum_{(u,v)\ne(0,0)} \lvert C_i(u,v)\rvert^2
+```
 
-因此方差可以表示块的交流能量，但不包含频率方向或不同频带的独立选择。
+其中 $`C_i(u,v)`$ 为块的 DCT 系数，$`(0,0)`$ 为直流（DC）项，求和遍历块内其余频率位置。因此方差可以表示块的交流能量，但不包含频率方向或不同频带的独立选择。
 
 执行步骤：
 
@@ -372,7 +403,7 @@ $$
 2. 用公共决策规则选方差最大的块；平坦或近似并列块均分权重。
 3. 取得块来源标签，对 `int32` 标签图做两次中值滤波，边界复制。
 4. 原始决策有唯一首选的块采用中值结果；原本并列的块保留等权。
-5. 按真实块边界展开权重，计算 $F=\sum_i W_iI_i$。
+5. 按真实块边界展开权重，计算 $`F=\sum_i W_iI_i`$。
 
 | 字段 | 默认值 | 范围与作用 |
 |---|---|---|
@@ -389,42 +420,47 @@ $$
 
 - 首层使用 `near_sym_a` 的 5/7 抽头近对称双正交滤波器。
 - 后续层使用 `qshift_a` 的 10 抽头 Q-shift 滤波器，两棵相位树沿两个维度形成四棵实树。
-- 三组实高频各组合成两个复方向，每层共六个方向，约对应 $\pm15^\circ,\pm45^\circ,\pm75^\circ$。
+- 三组实高频各组合成两个复方向，每层共六个方向，约对应 $`\pm15^\circ,\pm45^\circ,\pm75^\circ`$。
 
-例如四个交错实相位 $a,b,c,d$ 的方向组合为：
+例如四个交错实相位 $`a,b,c,d`$ 的方向组合为：
 
-$$
-z_+=\frac{(a-d)+\mathrm i(b+c)}{\sqrt2},\qquad
-z_-=\frac{(a+d)+\mathrm i(b-c)}{\sqrt2}
-$$
+```math
+\begin{aligned}
+z_+ &= \frac{(a-d)+\mathrm{i}(b+c)}{\sqrt{2}} \\
+z_- &= \frac{(a+d)+\mathrm{i}(b-c)}{\sqrt{2}}
+\end{aligned}
+```
 
 这些组合与双树滤波器组一起提供方向选择性；保留全部系数时可通过逆变换重建输入。数学、滤波器数值来源及独立实现约定见 [DTCWT 滤波器说明](../algorithms/src/fusion/dtcwt/FILTERS.md)。
 
-记最粗低频为 $L_i$，第 $k$ 层、第 $d$ 个方向的复系数为 $C_i^{k,d}$。低频取所有输入的算术均值：
+记最粗低频为 $`L_i`$，第 $`k`$ 层、第 $`d`$ 个方向的复系数为 $`C_i^{k,d}`$。低频取所有输入的算术均值：
 
-$$
-\bar L=\frac1N\sum_iL_i
-$$
+```math
+\bar{L}=\frac{1}{N}\sum_i L_i
+```
 
-高频逐对合并。对累计系数 $A$ 和下一张的系数 $B$，在同一方向的子带窗口 $\omega$ 中：
+高频逐对合并。对累计系数 $`A`$ 和下一张的系数 $`B`$，在同一方向的子带窗口 $`\omega`$ 中：
 
-$$
-E_A(x)=\max_{u\in\omega_x}|A(u)|,\qquad
-E_B(x)=\max_{u\in\omega_x}|B(u)|,\qquad
-m(x)=\mathbf1[E_A(x)>E_B(x)]
-$$
+```math
+\begin{aligned}
+E_A(x) &= \max_{u\in\omega_x}\lvert A(u)\rvert \\
+E_B(x) &= \max_{u\in\omega_x}\lvert B(u)\rvert \\
+m(x) &= \mathbf{1}\!\left[E_A(x)>E_B(x)\right]
+\end{aligned}
+```
 
-$$
-\hat m(x)=\mathbf1\!\left[\sum_{u\in\omega_x}m(u)>\frac{|\omega|}{2}\right],
-\qquad
-C(x)=
+```math
+\begin{aligned}
+\hat{m}(x) &= \mathbf{1}\!\left[\sum_{u\in\omega_x}m(u)>\frac{\lvert\omega\rvert}{2}\right] \\
+C(x) &=
 \begin{cases}
-A(x),&\hat m(x)=1\\
-B(x),&\hat m(x)=0
+A(x), & \hat{m}(x)=1 \\
+B(x), & \hat{m}(x)=0
 \end{cases}
-$$
+\end{aligned}
+```
 
-最大值窗口使用端点重复的反射边界，多数投票的窗口外取零。选择完整复数，保留幅值与相位；初始活动度相等时不投票给累计输入，最终来源由邻域多数决定。随后从 $\bar L$ 和融合后的全部高频逆变换重建。
+最大值窗口使用端点重复的反射边界，多数投票的窗口外取零。选择完整复数，保留幅值与相位；初始活动度相等时不投票给累计输入，最终来源由邻域多数决定。随后从 $`\bar{L}`$ 和融合后的全部高频逆变换重建。
 
 | 字段 | 默认值 | 范围与作用 |
 |---|---|---|
@@ -443,33 +479,41 @@ $$
 
 **第一步：全局梯度筛帧。**
 
-$$
-s_i=\operatorname{mean}_{\Omega}
+```math
+\begin{aligned}
+s_i &= \operatorname{mean}_{\Omega}
 \left[(\operatorname{Scharr}_x g_i)^2+
-      (\operatorname{Scharr}_y g_i)^2\right],
-\qquad
-\mathcal S=\{i:s_i\ge\alpha\max_js_j\}
-$$
+      (\operatorname{Scharr}_y g_i)^2\right] \\
+\mathcal{S} &= \left\{i:s_i\ge\alpha\max_j s_j\right\}
+\end{aligned}
+```
 
 Scharr 使用 `BORDER_REFLECT`；常规尺寸的统计区域去掉一圈边界，2 像素窄图使用全图。所有分数为零时保留全部输入，`selection_ratio=0` 同样保留全部。
 
 **第二步：生成局部差异响应。**
 
-$$
-d_i=|g_i-M_w(g_i)|,\qquad
-d_i(x)=0\ \text{当}\ d_i(x)\le\tau,\qquad
-R_i=GF(g_i,d_i;r,\epsilon)
-$$
+```math
+\begin{aligned}
+\Delta_i(x) &= \left\lvert g_i(x)-M_w(g_i)(x)\right\rvert \\
+d_i(x) &=
+\begin{cases}
+\Delta_i(x), & \Delta_i(x)>\tau \\
+0, & \Delta_i(x)\le\tau
+\end{cases} \\
+R_i &= \operatorname{GF}(g_i,d_i;r,\epsilon)
+\end{aligned}
+```
 
 局部均值使用 OpenCV 默认边界。第一遍引导滤波输出允许负值，不能提前裁成权重；只在保留帧之间比较响应，避免被筛除帧的零占位压过负响应。
 
-**第三步：细化决策并融合。** 由 $R_i$ 生成近似并列等权的决策 $P_i$，再执行：
+**第三步：细化决策并融合。** 由 $`R_i`$ 生成近似并列等权的决策 $`P_i`$，再执行：
 
-$$
-W_i=\mathcal N\!\left(\operatorname{clip}(GF(g_i,P_i;r,\epsilon))\right),
-\qquad
-F=\sum_{i\in\mathcal S}W_iI_i
-$$
+```math
+\begin{aligned}
+W_i &= \mathcal{N}\!\left(\operatorname{clip}(\operatorname{GF}(g_i,P_i;r,\epsilon))\right) \\
+F &= \sum_{i\in\mathcal{S}} W_i I_i
+\end{aligned}
+```
 
 两遍引导滤波共用参数，均使用官方完整分辨率实现。上游缺少 `ximgproc` 时的降采样后备路径没有引入本项目。
 
