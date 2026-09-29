@@ -11,5 +11,5 @@ OpenCV 和 Qt 从已有开发包查找。后续新增的第三方源码依赖放
 到明确的 Git 提交，保留上游许可证。自有代码的中文注释维护不修改这些第三方
 仓库，以便后续正常更新子模块。
 
-OpenFocus 的具体借鉴范围见 `docs/references.md`。
+OpenFocus 的具体借鉴范围见 [算法原理与参考来源](../docs/algorithm.md)。
 

@@ -10,7 +10,7 @@
 
 打包入口 `pyproject.toml` 位于仓库根目录，便于源码分发包一起包含算法与第三方
 依赖。初始化子模块并准备包含 `opencv_contrib/ximgproc` 的 OpenCV 开发包后，可在根目录执行
-`python -m pip install .`；依赖路径设置见 [构建说明](../../docs/build.md)。
+`python -m pip install .`；依赖路径设置见 [构建说明](https://github.com/hzweifei/Multi-focus-Image-Fusion/blob/HEAD/docs/build.md)。
 
 构建 `mif_wheel` 目标会把 Release 安装包写入 `outputs/Release/python/wheels`。
 Windows 包和 wheel 收集核心库及 OpenCV DLL，包括官方引导滤波所需的 `ximgproc`，
@@ -163,53 +163,21 @@ ECC 需要较好的初始对齐；SIFT 需要足够的可匹配纹理。七个�
 `ransac_threshold`、`min_inlier_ratio` 供 SIFT 使用，`max_size` 控制估计分辨率。
 配准入口仍校验所有配置；忽略合法模型值不代表接受非法模型枚举。
 
-## 从旧接口迁移
-
-新增 `DCT`、`DTCWT`、`GFGFGF` 枚举及三个配置成员后，原有 `GUIDED_FILTER=0`、
-`LAPLACIAN_PYRAMID=1` 保持原值。包装文件、扩展模块与核心 DLL 必须成套更新；
-不要将旧扩展与新参数结构混用。引导滤波改用 OpenCV 官方 `ximgproc` 实现，
-边界处理随之更新，不承诺与旧版本逐像素相同。诊断代码需允许 DTCWT 返回 `None`。
-
-旧扁平融合字段已移除，不提供别名。下表中“方法配置”指
-`options.guided_filter` 或 `options.laplacian_pyramid`；如果希望两种方法保留相同
-的清晰度或细节设置，需要分别赋值。
-
-| 旧 `FusionOptions` 字段 | 新字段 |
-|---|---|
-| `focus_measure` | 方法配置的 `focus.measure` |
-| `focus_window` | 方法配置的 `focus.window` |
-| `detail_radius`、`detail_epsilon` | 方法配置的同名字段 |
-| `base_radius`、`base_epsilon` | `guided_filter.base_radius`、`guided_filter.base_epsilon` |
-| `pyramid_levels` | `laplacian_pyramid.levels` |
-| `method`、`keep_weight_maps` | 仍在顶层，含义不变 |
-
-`Alignment` 及其旧成员已移除，不提供兼容别名。按下表拆成算法与模型：
-
-| 旧 `Alignment` 值 | `RegistrationOptions.method` | `RegistrationOptions.motion_model` |
-|---|---|---|
-| `NONE` | `RegistrationMethod.NONE` | 保持默认 |
-| `TRANSLATION` | `RegistrationMethod.ECC` | `MotionModel.TRANSLATION` |
-| `AFFINE` | `RegistrationMethod.ECC` | `MotionModel.AFFINE` |
-| `ECC_HOMOGRAPHY` | `RegistrationMethod.ECC` | `MotionModel.HOMOGRAPHY` |
-| `FEATURE_HOMOGRAPHY` | `RegistrationMethod.SIFT` | 保持默认，SIFT 固定单应性 |
-
-更早版本的配准与融合混合配置仍按以下方式迁移，不提供属性转发：
-
-| 旧用法 | 新用法 |
-|---|---|
-| `FusionOptions.alignment` | 按上表设置 `RegistrationOptions.method` 与 `motion_model` |
-| `FusionOptions.alignment_iterations`、`alignment_epsilon` | `RegistrationOptions.iterations`、`epsilon` |
-| `FusionOptions.alignment_max_size`、`alignment_max_features` | `RegistrationOptions.max_size`、`max_features` |
-| `FusionOptions.alignment_match_ratio`、`alignment_ransac_threshold`、`alignment_min_inlier_ratio` | `RegistrationOptions.match_ratio`、`ransac_threshold`、`min_inlier_ratio` |
-| 通过 `fuse` 的配置同时配准 | 改为显式两步或 `register_and_fuse`；组合结果的图像位于 `result["image"]` |
-| 从 `fuse_detailed` 读取 `crop`／`transforms` | 从 `register_images` 或 `register_and_fuse` 结果读取 |
+## 错误与示例
 
 `FusionOptions` 只控制融合，`RegistrationOptions` 只控制配准；单独运行某个阶段
 不会校验另一阶段的参数。参数类型传错会抛出 `TypeError`，非法值抛出
 `ValueError`，无法求解的配准抛出 `RuntimeError`。
 
-`examples/python/fuse_images.py` 演示纯融合，`examples/python/register_images.py`
-演示单独配准并保存整组图像。命令行算法为 `--method none/ecc/sift`，默认 `ecc`；
-ECC 模型为 `--motion-model translation/affine/homography`，默认 `translation`。
-选择 `sift` 时固定求解单应性，`--motion-model` 不改变其行为。
+仓库的 `examples/python/fuse_images.py` 演示纯融合，`register_images.py`
+演示单独配准并保存整组图像。后者的 `--method none/ecc/sift` 默认 `ecc`；
+`--motion-model translation/affine/homography` 默认 `translation`，只影响 ECC。
 
+## 更新包与旧接口
+
+更新时成套替换 Python 包装文件、扩展模块和核心 DLL。当前接口将配准与融合分开，
+ECC 的模型由 `motion_model` 选择，融合参数存放在各方法对象内。
+旧 `Alignment` 枚举和扁平参数已移除，完整对照统一见
+[接口迁移](https://github.com/hzweifei/Multi-focus-Image-Fusion/blob/HEAD/docs/sdk.md#接口迁移)。
+引导滤波使用官方 `ximgproc` 实现，边界结果可能与旧版不同；通用诊断代码应允许
+DTCWT 返回空来源图和权重。

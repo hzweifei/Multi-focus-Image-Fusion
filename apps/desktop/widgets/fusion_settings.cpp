@@ -1,41 +1,18 @@
 #include "fusion_settings.hpp"
+#include "parameter_form.hpp"
 
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFontMetrics>
-#include <QFormLayout>
 #include <QLabel>
 #include <QPushButton>
-#include <QSizePolicy>
 #include <QSpinBox>
 #include <QString>
 #include <QVariant>
 #include <QVBoxLayout>
-#include <QWheelEvent>
 
 namespace mif::desktop {
 namespace {
-
-/// 参数页的滚轮交给父滚动区，点击箭头及键盘编辑仍使用 Qt 默认行为。
-template <typename Widget>
-class ScrollSafeWidget final : public Widget {
-public:
-    explicit ScrollSafeWidget(QWidget* parent = nullptr) : Widget(parent) {}
-protected:
-    void wheelEvent(QWheelEvent* event) override { event->ignore(); }
-};
-
-/// 统一标签列的宽度，避免切换方法时数值列跳动；标签也提供字段的中文说明。
-void addParameter(QFormLayout* form, const QString& title, QWidget* field, int label_width, int row = -1) {
-    auto* label = new QLabel(title);
-    label->setMinimumWidth(label_width);
-    label->setToolTip(field->toolTip());
-    label->setBuddy(field);
-    field->setAccessibleName(title);
-    field->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    if (row < 0) form->addRow(label, field);
-    else form->insertRow(row, label, field);
-}
 
 /// 正则项作用于 [0, 1] 灰度图的方差；下限避免官方浮点引导滤波在平坦区除零。
 QDoubleSpinBox* createEpsilon(QWidget* parent, const QString& name, double default_value) {
@@ -60,17 +37,6 @@ QSpinBox* createRadius(QWidget* parent, const QString& name, int default_value) 
     field->setSuffix(QStringLiteral(" px"));
     field->setValue(default_value);
     return field;
-}
-
-/// 所有方法采用相同表单间距，独立容器保证整组显隐，不销毁用户填写的参数。
-QFormLayout* createParameterForm(QWidget* panel) {
-    auto* form = new QFormLayout(panel);
-    form->setContentsMargins(0, 0, 0, 0);
-    form->setHorizontalSpacing(8);
-    form->setVerticalSpacing(8);
-    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-    form->setRowWrapPolicy(QFormLayout::DontWrapRows);
-    return form;
 }
 
 /// 各类局部统计窗口均要求奇数；提交偶数时向上调整，逐字输入期间保留用户文本。

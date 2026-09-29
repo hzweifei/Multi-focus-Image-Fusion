@@ -3,14 +3,13 @@
 #include <QMainWindow>
 #include <QStringList>
 #include <opencv2/core.hpp>
-#include <memory>
 
 // 前置声明可以减少公开此窗口类时需要包含的 Qt 头文件。
 class QListWidget;
 class QPushButton;
 class QLabel;
 class QProgressBar;
-namespace Ui { class MainWindow; }
+class QHBoxLayout;
 
 namespace mif::desktop {
 class ImageView;
@@ -54,9 +53,9 @@ protected:
 
 private:
     /// 创建左侧的图像列表、独立配准/融合设置和统一运行按钮。
-    void createSidebar();
+    void createSidebar(QHBoxLayout* workspace_layout);
     /// 创建右侧的输入/结果预览、导出按钮和进度显示。
-    void createPreviewArea();
+    void createPreviewArea(QHBoxLayout* workspace_layout);
     /// 连接输入、参数、运行与保存操作，集中描述窗口交互。
     void connectActions();
     /// 按需读取当前条目并生成显示副本；读取失败只影响此条目的预览。
@@ -67,9 +66,6 @@ private:
     void clearResult();
     /// 按结果位深选择导出格式，并保存原始结果数据。
     void exportResult();
-
-    // Designer 文件只提供窗口外壳；其余控件由两个创建函数填入 workspaceLayout。
-    std::unique_ptr<Ui::MainWindow> ui_;
 
     // 输入列表与两组独立配置。具体字段和方法切换由各自的参数控件管理。
     QListWidget* files_;

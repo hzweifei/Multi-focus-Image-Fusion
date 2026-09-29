@@ -1,5 +1,4 @@
 #include "main_window.hpp"
-#include "ui_main_window.h"
 #include "image_io.hpp"
 #include "widgets/image_view.hpp"
 #include "widgets/fusion_settings.hpp"
@@ -9,11 +8,13 @@
 #include <mif/registration_options.hpp>
 #include <QCloseEvent>
 #include <QCollator>
+#include <QCoreApplication>
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontMetrics>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
@@ -43,12 +44,35 @@ bool supported(const QString& path) {
 QString lastFolder() { return QSettings().value("lastFolder", QDir::homePath()).toString(); }
 } // namespace
 
-MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui_(std::make_unique<Ui::MainWindow>()) {
-    ui_->setupUi(this);
+MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
+    // 窗口外壳与交互控件统一在 C++ 中创建；对象名供样式和界面检查使用。
+    setObjectName("MainWindow");
+    resize(1280, 820);
+    setWindowTitle(QCoreApplication::translate("MainWindow", "Multi Focus · 多聚焦图像融合"));
+    auto* central = new QWidget(this);
+    central->setObjectName("centralwidget");
+    auto* root = new QVBoxLayout(central);
+    root->setObjectName("rootLayout");
+    root->setSpacing(12);
+    root->setContentsMargins(22, 18, 22, 18);
+    auto* title = new QLabel(QCoreApplication::translate("MainWindow", "多聚焦图像融合"), central);
+    title->setObjectName("titleLabel");
+    root->addWidget(title);
+    auto* subtitle = new QLabel(QCoreApplication::translate("MainWindow",
+        "MULTI FOCUS  /  导入同一批次图像，配准后合成清晰细节。"), central);
+    subtitle->setObjectName("subtitleLabel");
+    root->addWidget(subtitle);
+    auto* workspace = new QHBoxLayout;
+    workspace->setObjectName("workspaceLayout");
+    workspace->setSpacing(18);
+    root->addLayout(workspace);
+    setCentralWidget(central);
+
     setAcceptDrops(true);
     setMinimumSize(940, 670);
-    createSidebar();
-    createPreviewArea();
+    // 布局由 Qt 父子关系持有，只在构造时传给区域创建函数，无需额外成员保存。
+    createSidebar(workspace);
+    createPreviewArea(workspace);
     connectActions();
 
     const auto geometry = QSettings().value("windowGeometry").toByteArray();
@@ -56,7 +80,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), ui_(std::make_uni
     updateControls();
 }
 
-void MainWindow::createSidebar() {
+void MainWindow::createSidebar(QHBoxLayout* workspace_layout) {
     // 左侧第一组：导入、浏览和移除图像。完整路径保存在条目的 Qt::UserRole 中。
     auto* sidebar = new QWidget(this);
     sidebar->setObjectName("sidebar");
@@ -116,10 +140,10 @@ void MainWindow::createSidebar() {
     run_ = new QPushButton(QStringLiteral("开始融合"));
     run_->setObjectName("primaryButton"); run_->setMinimumHeight(44);
     side->addWidget(run_);
-    ui_->workspaceLayout->addWidget(sidebar);
+    workspace_layout->addWidget(sidebar);
 }
 
-void MainWindow::createPreviewArea() {
+void MainWindow::createPreviewArea(QHBoxLayout* workspace_layout) {
     // 右侧工具栏和并排预览区。两个预览都只显示 8 位副本，导出仍使用原始结果。
     auto* workspace = new QVBoxLayout;
     auto* toolbar = new QHBoxLayout;
@@ -164,7 +188,7 @@ void MainWindow::createPreviewArea() {
     status_->setWordWrap(true); workspace->addWidget(status_);
     progress_ = new QProgressBar; progress_->setRange(0, 100); progress_->setValue(0);
     progress_->setFixedHeight(16); workspace->addWidget(progress_);
-    ui_->workspaceLayout->addLayout(workspace, 1);
+    workspace_layout->addLayout(workspace, 1);
 
     // 适应窗口按钮只与本区域有关，无需保存为窗口成员。
     connect(fit, &QPushButton::clicked, source_view_, &ImageView::fitImage);

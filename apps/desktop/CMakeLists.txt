@@ -1,14 +1,15 @@
 # 将窗口与后台任务做成内部静态库，让桌面入口和集成测试复用同一套界面代码。
 add_library(mif_desktop_ui STATIC
-    main_window.cpp main_window.hpp main_window.ui
+    main_window.cpp main_window.hpp
     image_io.cpp image_io.hpp
     widgets/image_view.cpp widgets/image_view.hpp
     widgets/fusion_settings.cpp widgets/fusion_settings.hpp
     widgets/registration_settings.cpp widgets/registration_settings.hpp
+    widgets/parameter_form.hpp
     workers/fusion_worker.cpp workers/fusion_worker.hpp
 )
-# AUTOMOC 处理信号槽，AUTOUIC 编译 Qt Designer 的主窗口外框。
-set_target_properties(mif_desktop_ui PROPERTIES AUTOMOC ON AUTOUIC ON)
+# AUTOMOC 处理窗口和工作线程的信号槽；所有布局直接由 C++ 创建。
+set_target_properties(mif_desktop_ui PROPERTIES AUTOMOC ON)
 target_include_directories(mif_desktop_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mif_desktop_ui PUBLIC mif::core Qt${QT_VERSION_MAJOR}::Widgets)
 

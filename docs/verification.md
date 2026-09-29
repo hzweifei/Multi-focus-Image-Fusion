@@ -1,253 +1,139 @@
-# 验证记录
+# 验证指南
 
-验证日期：2026-09-28。
+本文说明如何复现当前测试，以及最近一次功能验证的关键结果。测试使用固定合成输入，
+不依赖下载图像；运行环境和交付配置见 [构建说明](build.md)。
 
-## 已验证环境
+## 已验证环境与结果
 
-Windows x64，Visual Studio 2022 / MSVC 19.44，CMake 4.0.2，
-OpenCV 4.12.0，Qt 5.15.2，Python 3.12.4，NumPy 2.2.6，nanobind 2.9.2。
-Qt 6、Linux 和 macOS 暂未实际编译验证。
+最近一次功能验证：2026-09-29。Windows x64，Visual Studio 2022 / MSVC 19.44，
+CMake 4.0.2，OpenCV 4.12.0（含 ximgproc），Qt 5.15.2，Python 3.12.4，
+NumPy 2.2.6，nanobind 2.9.2。Qt 6、Linux 和 macOS 尚未实际编译验证。
 
-## 检查结果
+- Release 完整构建和 **22/22 项 CTest** 通过，包括核心、桌面流程、双预览联动和 Python 绑定。
+- wheel 安装到独立目录后，清除开发依赖 PATH 和额外 DLL 搜索路径，**22 项 Python 测试**通过。
+- 外部 SDK 工程编译、链接并运行通过，实际调用五种融合方法和 ECC 三种模型。
+- Windows 平台插件下的桌面流程通过；五种参数表单及小窗口截图已目视检查。
+  Qt 程序、Python 包、SDK 均包含 ximgproc 及实际所需的运行库。
 
-- Release 完整构建通过：核心库、Qt 桌面程序、C++ 示例、nanobind 扩展。
-- CTest 10/10 通过：清晰度指标、合成融合效果、原图不变与位深、异常输入、
-  权重归一化、进度和取消、ECC 配准、257 张来源索引、桌面流程、Python 绑定。
-- Qt 原生 Windows 窗口测试通过，使用程序目录中的运行库，检查中文路径、
-  预览、后台融合、导出、16 位 PNG 和 float32 TIFF 无损往返。
-- Python wheel 构建成功，安装到独立测试目录后，5 个 unittest 用例全部通过。
-  没有将包安装到用户的全局 Python 环境。
-- 已生成 `outputs/demo/` 合成图像和 `outputs/desktop-preview.png` 界面截图。
+上述构建、CTest、独立 wheel/SDK 和 Windows 界面流程已在本轮结构整理后重新验证。
+下面的命令用于复现，历史临时文件不作为运行前提；后文另列此前完成的数值对照与性能记录。
 
-合成测试中，输入相对于全清晰参考图的平均绝对误差约 12.44，融合后约
-0.28–0.33（8 位范围）。这是固定合成纹理的回归检查，不代表真实显微图像性能。
+## 复现自动测试
 
-## 待真实数据验证
+在仓库根目录执行，按 [构建说明](build.md) 补充本机依赖路径及 Python 解释器：
 
-当前没有用户提供的实际焦点图像栈。噪声、倍率变化、视差、曝光差异、微小结构
-与反光区域的融合效果仍需进一步评估；当前不对实际检测精度作保证。
+```powershell
+git submodule update --init --recursive
+cmake -S . -B build/local -DCMAKE_BUILD_TYPE=Release -DMIF_BUILD_GUI=ON -DMIF_BUILD_PYTHON=ON -DMIF_BUILD_TESTS=ON
+cmake --build build/local --config Release --parallel
+ctest --test-dir build/local -C Release --output-on-failure
+```
 
-## 交付目录验证
+若已配置本机 `local` 预设，也可使用 `cmake --preset local`、
+`cmake --build --preset local` 和 `ctest --preset local`。
+只验证核心时可关闭 GUI 和 Python；测试数量会相应减少。
 
-构建规则已升级：核心库默认动态链接，按配置整理 `outputs/<配置>/app`、
-`python`、`sdk` 与 `examples`，编译中间文件保留在 `build/`。
+| 测试范围 | 主要检查 |
+|---|---|
+| 五种融合方法 | 灰度/BGR、8/16/float32、恒等与互补清晰输入、奇数尺寸、独立参数校验 |
+| 方法诊断 | 支持诊断的方法检查权重归一化、原始输入顺序与 257 帧索引；GFG-FGF 排除帧零权，DTCWT 空诊断 |
+| 配准与组合 | ECC 三种模型、SIFT 单应性、共同有效区域、16 位精度、独立两步与组合入口一致 |
+| 数据与任务生命周期 | 输入不变、结果独立持有、进度单调、取消、回调异常传播 |
+| Qt 参数与文件流程 | 五表单独立保存与重置、条目重排后传参、忙时锁定、滚轮保护、小窗口滚动、文件夹批次替换 |
+| Qt 预览 | 两侧缩放/平移/适应、不同图像与面板尺寸、空图、换图与窗口调整 |
+| Python | 非连续与只读数组、嵌套配置复制和生命周期、结果所有权、异常映射、DTCWT 的 `None`/`[]` |
 
-- 改为 DLL 后，CTest 10/10 通过，包括跨 DLL 的融合回调和取消异常。
-- 将 SDK 复制并改名，外部 `tests/sdk_consumer` 项目通过 `find_package(Mif)`
-  编译链接成功，使用 SDK 的运行库执行成功。
-- 清除开发依赖 PATH 后，`outputs/Release/app` 中的程序启动且响应正常。
-- 不设置外部 OpenCV DLL 路径时，从 `outputs/Release/python` 导入包并通过 5 项测试。
-- 新 wheel 包含 21 个 Windows 运行 DLL；安装到独立目录后，在未设置外部
-  OpenCV 路径的环境中通过全部 5 项 Python 测试。
+测试入口与分组见 [tests/CMakeLists.txt](../tests/CMakeLists.txt)。例如，单独检查 DTCWT
+和引导滤波数值边界：
 
-## 中文注释与结构精简后的复验
+```powershell
+ctest --test-dir build/local -C Release -R "core\.(dtcwt_.*|guided_filter_numerics)" --output-on-failure
+```
 
-自有算法、Qt、Python 绑定、示例、测试及构建脚本已补充中文注释。
-本轮合并了 Python 扩展入口，拆分了主窗口初始化方法，并统一运行库安装函数。
+CTest 默认以 `offscreen` 平台运行桌面测试。检查真实 Windows 样式和布局时，可在
+Qt 与 OpenCV 运行库可用的终端中执行：
 
-- Release 完整构建通过，`outputs/Release/` 中的程序、Python 包和 SDK 已更新。
-- CTest 10/10 通过，覆盖主窗口调整后的桌面流程及合并入口后的 Python 导入。
-- wheel 重新构建成功，安装到 `build/comments-wheel-smoke/`；清除开发依赖 PATH、
-  不设置 `MIF_TEST_DLL_DIRS` 后，5 项 Python 测试全部通过。
+```powershell
+New-Item -ItemType Directory -Force build/verification | Out-Null
+$env:PATH = "$PWD/outputs/Release/app;$env:PATH"
+$env:QT_PLUGIN_PATH = "$PWD/outputs/Release/app"
+$env:QT_QPA_PLATFORM = "windows"
+build/local/bin/Release/mif_gui_tests.exe apps/desktop/resources/style.qss build/verification/desktop.png
+```
 
-注释范围和保留的模块边界见 [项目结构](architecture.md)。
+该程序保存配准页、五种融合页、长表单底部和小窗口截图；需要人工查看文字、预览对齐和控件是否可达。
+上述可执行文件路径适用于 Visual Studio 多配置构建；其他生成器按实际输出路径运行。
 
-## 独立配准模块与单应性方法验证
+## 验证交付包
 
-新增 SIFT + RANSAC 和 ECC 单应性，保留 ECC 平移/仿射；方法分别放在
-`algorithms/src/registration/` 的独立文件中。完整 Release 构建通过，CTest 13/13 通过。
+### Python wheel
 
-- SIFT：三帧轻透视与较大位移，769×1051 奇数图像缩小到最长边 601 后求解。
-  两张源图的网格投影平均误差分别约 0.052、0.045 像素，最大误差不超过 0.133 像素。
-- ECC 单应性：相同大图缩小到最长边 501，小运动的平均投影误差约 0.007 像素。
-- 两种方法均覆盖互补轻失焦、16 位低位信息保留、输入未修改和共同区域完整覆盖。
-  还覆盖特征不足、无纹理参考/源图、错误帧序号、非法参数及旧聚合初始化兼容性。
-- Qt 测试将新配准选项重排后执行，结果与直接调用对应核心模式一致。
-- Python 绑定的 8 项测试通过；新 wheel 安装到 `build/registration-wheel-smoke/`
-  后，在清除开发依赖 PATH 且未设置额外 DLL 路径的环境中再次通过全部 8 项测试。
-- 安装 SDK 的外部工程成功查找、编译、链接并运行；导出的 MSVC 目标自动携带
-  `/utf-8`，解决 Windows 默认代码页误读中文公开头文件的问题。
-- 清除开发依赖 PATH 后，交付 Qt 程序成功启动，并加载包内核心库、Qt 和新增配准 DLL。
+使用与扩展匹配的 Python，并准备 NumPy。先生成 wheel，再把本次生成的文件安装到独立目录：
 
-以上几何误差来自固定合成图像及已知变换，仅作为回归指标；真实失焦序列仍需单独评估。
+```powershell
+cmake --build build/local --config Release --target mif_wheel
+python -m pip install --no-deps --upgrade --target build/verification/wheel "<本次生成的 wheel 完整路径>"
+$env:PYTHONPATH = "$PWD/build/verification/wheel"
+$env:MIF_TEST_DLL_DIRS = ""
+python bindings/python/tests/test_fusion.py
+```
 
-## 独立融合方法文件验证
+wheel 位于 `outputs/Release/python/wheels/`。检查 DLL 自包含性时，还应从运行进程的
+PATH 中移除开发环境的 OpenCV/Qt 目录，避免借用外部运行库。包安装与测试不会修改全局 Python 包。
 
-将引导滤波和拉普拉斯金字塔分别放到 `algorithms/src/fusion/` 的方法文件中，
-各文件包含权重生成与重建；公共入口统一处理校验、配准和输出整理。
+### C++ SDK
 
-- Release 完整构建通过，CTest 13/13 通过，Qt、Python 包与 SDK 已更新到
-  `outputs/Release/`。C++ 和 Python 公开接口保持不变。
-- 在拆分前保存 96 组结果，覆盖两种方法、两种清晰度指标、三种位深、灰度/BGR，
-  以及小图、奇偶尺寸和不同金字塔层数。拆分后的图像、权重、来源索引、变换矩阵
-  与裁剪区域共 480 个数组逐元素完全一致。本地比较脚本与基线保留在 `build/`。
-- 扩展现有取消测试：两种方法均覆盖清晰度、权重、融合和输出整理阶段的取消，
-  验证回调异常类型与消息不变，以及完整执行时进度单调、阶段名称正确、最终到达 100。
-- wheel 已重新构建并安装到 `build/fusion-split-wheel-smoke/`，清除开发依赖 PATH
-  且未设置额外 DLL 路径时，全部 8 项 Python 测试通过。
+以下工程只通过已安装的 SDK 查找接口和库，不引用核心源码：
 
-## 算法目录按职责整理后的复验
+```powershell
+cmake -S tests/sdk_consumer -B build/verification/sdk-consumer -DMif_DIR="$PWD/outputs/Release/sdk/lib/cmake/Mif"
+cmake --build build/verification/sdk-consumer --config Release
+$env:PATH = "$PWD/outputs/Release/sdk/bin;$env:PATH"
+build/verification/sdk-consumer/Release/sdk_consumer.exe
+```
 
-总流程改为 `src/pipeline.cpp`；融合专用工具归入 `src/fusion/`，配准方法归入
-`src/registration/`，跨模块工具集中于 `src/common/`。文件职责与阅读顺序见
-[算法模块导航](../algorithms/README.md)。
+配置仍需能找到匹配的 OpenCV 开发包。测试源码见 [sdk_consumer](../tests/sdk_consumer/main.cpp)；
+可先将 SDK 复制到另一个目录，再用新的 `Mif_DIR` 重复配置，以检查 SDK 的可搬移性。
+运行时同样应排除开发目录中的 DLL；Qt 交付程序应使用 `outputs/Release/app/` 内的 DLL 和平台插件启动。
 
-- Release 完整构建、CTest 13/13 通过；Qt、Python 包和 SDK 已更新至 `outputs/Release/`。
-- 复用前述 96 组基线，480 个结果数组逐元素一致，覆盖图像、权重和诊断信息。
-- 清晰度单元测试使用新路径与命名空间，正常编译和链接模块内部工具。
-- Visual Studio 生成项目按实际目录分组源码和头文件；安装 SDK 的头文件搜索路径
-  仍仅暴露公开 `include/`，未泄漏内部 `src/` 路径。
-- wheel 重新构建后安装至 `build/algorithm-layout-wheel-smoke/`，清除开发依赖 PATH
-  且未设置额外 DLL 路径时，8 项 Python 测试全部通过。
+## DTCWT 独立参考与精度
 
-## 预览联动与文件夹批次导入验证
+除正逆变换互相验证外，[DTCWT 测试](../tests/test_dtcwt.cpp) 内置了 Python dtcwt 0.14.0
+的 `near_sym_a/qshift_a` 三层参考系数，检查复数相位、方向和低频输出。普通 CTest
+不需要安装该 Python 参考包；滤波器来源见 [FILTERS.md](../algorithms/src/fusion/dtcwt/FILTERS.md)。
 
-- Release 完整构建通过，CTest 14/14 通过，新增 `desktop.preview` 交互测试。
-  布局细节调整后，两项桌面测试再次通过。
-- 在真实主窗口的双向连接上发送滚轮、拖动、滚动条和双击事件，检查实际显示倍率、
-  相对中心及信号次数；覆盖不同面板/图像大小、调整窗口、空图、换图和适应按钮。
-- 文件夹导入覆盖替换旧批次、清空旧结果与导出状态、文件追加、自然排序和去重，
-  以及空目录、不递归、多目录、混合路径、取消选择、无效路径、运行中导入和拖放。
-- 验证切换输入图保留视野，新结果继承当前视野，新批次恢复整图预览。
-- 清除开发依赖 PATH，使用 `outputs/Release/app` 的运行库和 Windows 平台插件时，
-  两项桌面测试通过。带样式的界面截图已检查，两侧常规详情均为两行，预览位置齐平。
-  截图保留于 `outputs/preview-linked.png`，新版程序位于 `outputs/Release/app/mif_desktop.exe`。
+此前本机独立核对还包括：
 
-## 配准与融合独立接口验证（2026-09-29）
+- 32 组极小、窄图、奇偶尺寸及 1/2/4/16 层请求的往返测试，最大误差约 `5.6e-16`。
+- 128×192、四层变换与上述 Python 参考实现对照：24 个复方向子带的最大绝对差为
+  `2.17e-15`，低频最大差为 `3.56e-15`。
+- 129×193 两帧融合转换为 float32 后，与参考逐元素相同。
 
-- Release 完整构建通过，CTest 15/15 通过；新增 `core.pipeline` 检查显式两步与
-  `registerAndFuse()` 的图像、来源索引、权重、裁剪区域和变换矩阵完全一致，
-  覆盖两种融合方法、三种位深及 None/ECC 平移配准。
-- 独立配准测试直接检查所有输出图像及变换，不再通过融合结果间接判断配准。
-  覆盖两种单应性、平移/仿射、16 位精度、输入校验、None 模式独立缓冲，
-  以及配准和组合流程的进度、取消与回调异常传播。
-- 纯融合与重构前的 96 组基线比较，图像、来源索引和权重共 288 个数组逐元素一致。
-  旧融合结果中的配准元数据已移出，不参与本次纯融合基线比较。
-- wheel 重新构建并安装到 `build/separate-stages-wheel-smoke/`；清除开发依赖 PATH
-  且未设置额外 DLL 路径时，全部 14 项 Python 测试通过，包括独立参数类型、
-  只读切片、结果生命周期、配准后纯融合和组合调用一致性。
-- 安装后的 SDK 由外部 CMake 工程编译、链接并运行三个公开入口；使用包内运行库
-  通过检查。SDK 安装会清除已废弃的 `options.hpp`，避免原地升级残留旧类型定义。
-- Qt 工作流和双预览联动测试通过；使用交付目录中的 DLL 与 Windows 平台插件时，
-  工作流再次通过。已检查配准/融合两个独立设置区的截图，保存在
-  `outputs/separate-stages-preview.png`。
+这些数值是固定输入与滤波器配置下的误差记录，不代表其他方法或真实图像的融合质量。
 
-组合流程现在使用配准阶段恢复原位深的图像，结果严格等价于显式调用两步。
-旧流程始终保留中间浮点像素，整数输入开启配准后可能因舍入顺序变化产生少量差异；
-该行为变化与接口迁移说明见 [SDK 文档](sdk.md#接口迁移)。
+## 官方引导滤波的数值与耗时
 
-## 配准参数界面与设置布局验证（2026-09-29）
+官方 float32 引导滤波在平坦输入、`epsilon<=1e-8` 时可能产生 NaN，权重裁剪无法修复。
+核心因此要求引导正则项位于 `[1e-6, FLT_MAX]`，Qt 常用范围为 `[1e-6, 1]`；ECC 不受此限制。
+[数值测试](../tests/test_guided_filter.cpp) 覆盖常量、近常量、局部平坦、小图及半径
+1/3/15/255，检查有限输出与归一化权重。Qt 测试另检查最小合法正则项的实际传入与浮点输出。
 
-- Release 完整构建、CTest 15/15 通过。最后的控件间距与页签样式调整后，
-  两项桌面测试再次通过，交付程序已更新至 `outputs/Release/app/mif_desktop.exe`。
-- 检查七个配准字段的默认值、范围、小数精度与恢复默认行为；五种模式显示对应参数，
-  切换模式或页签不会丢失已输入值，恢复配准参数时保留当前方法。
-- 修改 ECC/SIFT 的全部参数并实际处理，与使用相同 `RegistrationOptions` 的
-  `registerAndFuse()` 比较结果；同时验证运行期间全部字段和重置按钮锁定、结束后恢复。
-- 向获得焦点的配准控件发送滚轮事件，确认参数不会意外改变；在受限高度下检查
-  设置页可滚动到重置按钮，固定运行按钮完整可见。文件夹批次替换和双预览联动回归通过。
-- 使用交付 DLL 和 Windows 平台插件，在创建主窗口前加载真实样式运行完整桌面工作流。
-  已检查关闭配准、ECC、SIFT、融合页和 940×670 小窗口五种截图：
-  `outputs/registration-settings.png` 及同名的 `_ecc`、`_sift`、`_fusion`、`_small` 版本。
+此前本机在 MSVC Release、OpenCV 4.12.0 下，对旧手写实现和官方实现做过独立滤波微基准。
+两者都裁剪权重至 `[0,1]`；输入为固定随机种子的 float32 灰度图和二值权重。
+预热三次后交替运行，每种实现记录 11 次并取中位数，半径 3/15 分别使用正则项 0.0001/0.01：
 
-## 配准算法与变换模型分离验证（2026-09-29）
-
-`RegistrationMethod` 只表示关闭、ECC 或 SIFT；ECC 的平移、仿射、单应性由
-独立的 `MotionModel` 选择，三个模型共用一个 ECC 实现文件。C++、Qt 和 Python
-使用相同约定，旧枚举的替换方式见 [SDK 接口迁移](sdk.md#配准算法与模型)。
-
-- Release 完整构建通过，15 项 CTest 全部通过；`outputs/Release/` 中的 Qt 程序、
-  Python 包、SDK 头文件与库已更新。
-- 与拆分前保存的结果比较，30 组独立配准与 60 组组合流程的 270 个数组逐元素一致。
-  覆盖关闭配准、ECC 三种模型、SIFT、两种融合方法、三种位深、灰度/BGR 和缩小工作图。
-  比较脚本与基线保存在本地 `build/check_method_model.py`、`build/method-model-baseline.npz`。
-- 验证方法与模型枚举的默认值和非法值；SIFT 忽略合法模型值，始终返回 3×3 变换，
-  关闭配准始终返回 2×3 单位变换。组合入口与显式两步在全部配准路径上结果一致。
-- Qt 覆盖两个下拉框条目重排后的实际传参，使用仿射旋转缩放和轻微透视样本与核心结果
-  对照；验证模型显隐、切换保留、恢复默认只重置数值，以及运行时禁用模型和其他参数。
-- wheel 已重新构建，安装到 `build/method-model-wheel-smoke/` 后，清除开发依赖 PATH
-  且不设置额外 DLL 路径，15 项 Python 测试全部通过。
-- 外部 SDK 工程使用交付目录的头文件、导入库和运行库编译、链接、运行成功，实际调用
-  ECC 的三个模型，检查新参数布局跨 DLL 传递及输出矩阵格式。
-- 使用交付运行库和 Windows 平台插件运行桌面流程通过；已检查 ECC 模型选择、SIFT
-  参数页和小窗口布局。截图保存在 `outputs/method-model-settings.png` 及同名的
-  `_ecc`、`_sift`、`_fusion`、`_small` 版本。
-
-## 融合方法独立目录与参数验证（2026-09-29）
-
-双尺度引导滤波和拉普拉斯金字塔分别拥有实现目录、公开参数头、校验函数和诊断生成过程。
-`FusionOptions` 持有两组独立配置，仅选中的方法参与校验；公共入口不强制方法使用
-清晰度或引导权重。扩展步骤见 [融合扩展方式](architecture.md#融合扩展方式)。
-
-- Release 完整构建通过，CTest 16/16 通过；新增 `core.method_options`，检查默认值、
-  配置隔离、非默认参数生效、未选中的无效配置不影响结果，以及切换后在计算前拒绝。
-  两方法各字段的范围、非法枚举、非有限正则项、进度与取消均有回归检查。
-- 与调整前的 192 组结果比较，图像、来源索引、细节权重共 576 个数组逐元素一致。
-  覆盖两方法、两种清晰度指标、默认及非默认参数、三种位深、灰度/BGR、小图、奇偶尺寸，
-  以及单层和超过图像尺寸允许值的金字塔层数。脚本和基线保存在本地
-  `build/check_fusion_methods.py`、`build/fusion-methods-baseline.npz`。
-- 组合流程使用两组不同的非默认融合设置，验证在关闭、ECC 三模型和 SIFT 配准路径上，
-  与显式两步的图像及所有诊断结果完全一致。
-- Qt 检查两套表单的显隐、独立存值、切换保留、仅当前方法恢复默认、滚轮保护和小窗口滚动。
-  方法与清晰度条目重排后，实际融合结果仍与对应核心配置一致；运行时全部字段被锁定。
-- 使用交付运行库和 Windows 平台插件，加载真实样式的桌面流程通过。已检查双尺度参数页、
-  滚到底部的参数与恢复按钮、金字塔参数页截图，保存在 `outputs/fusion-methods-settings.png`
-  的 `_fusion_guided`、`_fusion_guided_bottom`、`_fusion_pyramid` 版本。
-- Python wheel 已重新构建并安装至 `build/fusion-methods-wheel-smoke/`。清除开发依赖 PATH
-  且不设置额外 DLL 路径后，19 项 Python 测试全部通过，包含嵌套对象编辑、值复制、
-  父变量删除后的子对象生命周期，以及所选配置的计算和校验行为。
-- 外部 SDK 工程使用交付头文件、导入库与运行库编译、链接和运行通过；实际调用两种融合方法
-  的新嵌套配置及 ECC 三模型。Qt、Python 包、wheel、SDK 和示例已更新至 `outputs/Release/`。
-
-## 官方引导滤波与五种传统融合方法（2026-09-29）
-
-引导滤波已改为 OpenCV 4.12.0 `ximgproc` 的官方完整分辨率实现。新增 DCT 块方差、
-DTCWT 双树复小波和 GFG-FGF，连同 GFF 与拉普拉斯金字塔共五种方法。每种方法有
-独立目录、配置、校验及 Qt 参数表单，C++、Python、组合流程均可调用。
-
-### 正确性与交付
-
-- Release 完整构建通过；CTest **22/22** 通过。新增 DCT、GFG-FGF、DTCWT 变换、
-  DTCWT 融合、DTCWT 参数和引导滤波数值边界用例。日志为
-  `build/traditional-fusion-build-final.log` 与 `build/traditional-fusion-tests.log`。
-- DCT/GFG-FGF 验证灰度/BGR、8/16/float32、平坦与恒等输入、互补清晰质量、奇数边缘、
-  257 帧 int32 索引、参数校验、取消和异常传播；GFG-FGF 额外检查筛帧后原始索引和零权占位。
-- DTCWT 用六种方向纹理验证六个复子带的选择性；32 组独立引擎往返测试覆盖极小、
-  窄图和奇偶尺寸、1/2/4/16 层请求，最大误差约 `5.6e-16`。集成测试另覆盖 16 位低位信息、
-  两帧及三帧互补清晰区域、低频全栈均值、进度取消，以及空空间诊断的约定。
-- 与 Python dtcwt 0.14.0 的 `near_sym_a/qshift_a` 对照：128×192 四层、24 个复方向子带
-  最大绝对差 `2.17e-15`，低频最大差 `3.56e-15`；129×193 两帧融合转换为 float32 后
-  与参考逐元素相同。参考样本与记录在 `build/dtcwt-smoke/verification.json`，数学和
-  系数出处见 [滤波器说明](../algorithms/src/fusion/dtcwt/FILTERS.md)。参考 Python 包不随产品交付。
-- 官方 float32 引导滤波在平坦输入、`epsilon<=1e-8` 时可产生 NaN，权重裁剪不能修复。
-  核心统一要求引导正则项位于 `[1e-6, FLT_MAX]`，Qt 范围为 `[1e-6, 1]`；默认值不变。
-  测试覆盖常量、近常量、局部平坦、小图及半径 1/3/15/255，检查有限输出与归一化权重。
-  此限制不应用于 ECC。开发探针保存于 `build/guided-filter-edge-cases/`。
-- Qt 检查五表单独立存值、显隐、只重置当前方法、条目重排后的实际传参、滚轮和奇数窗口保护，
-  并检查三种引导滤波方法在最小正则项下的浮点平坦图输出。Windows 平台插件运行通过，
-  新参数页截图已目视检查：`outputs/traditional-fusion-settings_fusion_dct.png`、
-  `_fusion_dtcwt.png`、`_fusion_gfgfgf.png`。较长表单通过滚动查看。
-- 新 wheel 安装到 `build/traditional-fusion-wheel-smoke/` 后，清除开发依赖 PATH 和额外
-  DLL 搜索路径，**22 项 Python 测试通过**。包含五方法精度与所有权、新配置值复制与生命周期、
-  未选中参数隔离、组合流程、DTCWT 的 `None`/`[]` 以及正则项边界。
-- 外部 C++ SDK 工程重新编译、链接、运行成功，实际调用五种方法和 ECC 三个模型。
-  Qt、Python 包与 wheel、SDK、示例均更新至 `outputs/Release/`，三类主要交付目录均含
-  `opencv_ximgproc4.dll`。五方法合成示例生成在 `outputs/traditional-fusion-demo/`。
-
-### 引导滤波耗时
-
-使用同一 Release 程序比较旧手写实现与官方实现，保留相同的 `[0,1]` 权重裁剪。
-输入为固定随机种子的 float32 灰度引导图和二值权重，测试前预热三次，交替运行两种实现，
-各记录 11 次并取中位数；半径 3/15 对应正则项 0.0001/0.01。记录位于
-`build/guided-filter-benchmark/results.csv`，本机 OpenCV 4.12.0、MSVC Release。
-
-| OpenCV 线程设置 | 图像大小 | 半径 | 旧实现 | 官方实现 | 旧耗时 / 新耗时 |
+| OpenCV 线程数 | 图像大小 | 半径 | 旧实现 | 官方实现 | 旧耗时 / 新耗时 |
 |---|---|---|---|---|---|
 | 1 | 512×512 | 3 | 5.71 ms | 3.57 ms | 1.60 |
 | 1 | 1920×1080 | 15 | 48.37 ms | 31.42 ms | 1.54 |
 | 8 | 1920×1080 | 3 | 45.81 ms | 26.46 ms | 1.73 |
 | 8 | 1920×1080 | 15 | 47.56 ms | 27.41 ms | 1.73 |
 
-全部八组设置下，单独滤波环节约快 1.4–1.7 倍；这是本机微基准，不能作为完整融合或
-其他设备的固定提速比例。官方 `BORDER_REFLECT` 与旧 `BORDER_REFLECT_101` 在边缘处
-会产生数值差异；融合质量与精度通过上述测试验证，不宣称与旧结果逐像素一致。
+全部八组设置中，单独滤波环节约快 1.4–1.7 倍。该结果不代表完整融合流程或其他设备的固定提速，
+也不是当前 CTest 的性能门槛。官方 `BORDER_REFLECT` 与旧 `BORDER_REFLECT_101` 在边缘处有差异，
+不承诺与旧实现逐像素一致。
+
+## 尚待验证
+
+当前合成测试不替代真实采集数据评估。噪声、倍率变化、视差、曝光差异、细微结构与反光区域
+仍需使用实际显微或工业焦点序列检查；整栈驻留内存，大图性能和内存占用也需按目标设备评估。

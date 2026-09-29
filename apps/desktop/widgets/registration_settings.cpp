@@ -1,56 +1,17 @@
 #include "registration_settings.hpp"
+#include "parameter_form.hpp"
 
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFontMetrics>
-#include <QFormLayout>
 #include <QLabel>
 #include <QPushButton>
-#include <QSizePolicy>
 #include <QSpinBox>
 #include <QString>
 #include <QVariant>
 #include <QVBoxLayout>
-#include <QWheelEvent>
 
 namespace mif::desktop {
-namespace {
-
-/// 参数页允许滚动，但鼠标经过字段时不能意外改变数值或所选方法。
-/// 忽略滚轮后由父滚动区处理；鼠标点击、输入文字与键盘操作仍使用 Qt 默认行为。
-template <typename Widget>
-class ScrollSafeWidget final : public Widget {
-public:
-    explicit ScrollSafeWidget(QWidget* parent = nullptr) : Widget(parent) {}
-
-protected:
-    void wheelEvent(QWheelEvent* event) override { event->ignore(); }
-};
-
-/// 三组字段采用相同的间距与伸展规则，窄侧栏中仍能保持整齐的数值列。
-QFormLayout* createParameterForm(QWidget* parent) {
-    auto* form = new QFormLayout(parent);
-    form->setContentsMargins(0, 0, 0, 0);
-    form->setHorizontalSpacing(8);
-    form->setVerticalSpacing(8);
-    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-    form->setRowWrapPolicy(QFormLayout::DontWrapRows);
-    return form;
-}
-
-/// 标签与字段共用说明；标签宽度按当前字体计算，使不同参数组的输入框对齐。
-void addParameter(QFormLayout* form, const QString& title, QWidget* field,
-                  int label_width) {
-    auto* label = new QLabel(title);
-    label->setMinimumWidth(label_width);
-    label->setToolTip(field->toolTip());
-    label->setBuddy(field);
-    field->setAccessibleName(title);
-    field->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    form->addRow(label, field);
-}
-
-} // 匿名命名空间
 
 RegistrationSettings::RegistrationSettings(QWidget* parent) : QGroupBox(parent) {
     const RegistrationOptions defaults;
