@@ -123,7 +123,7 @@ ECC 直接比较参考图 $`T`$ 与变换后的源图 $`S(W_\theta(x))`$，调�
 
 ```math
 \begin{aligned}
-\theta^* &= \underset{\theta}{\operatorname{arg\,max}}\;\rho(\theta) \\
+\theta^* &= \arg\max_{\theta}\;\rho(\theta) \\
 \rho(\theta) &=
 \frac{\sum_{x\in\Omega_\theta}\tilde{T}(x)\tilde{S}_\theta(x)}
 {\sqrt{\sum_{x\in\Omega_\theta}\tilde{T}(x)^2}
@@ -240,8 +240,8 @@ S_i^{\mathrm{ML}}=M_w\left(\lvert D_{xx}g_i\rvert+\lvert D_{yy}g_i\rvert\right)
 $`D_{xx}`$、$`D_{yy}`$ 分别用 `[-1, 2, -1]` 及其转置计算。两个方向先取绝对值再相加，避免正负抵消。
 
 ```math
-S_i^{\mathrm{TG}}=M_w\left((\operatorname{Sobel}_x g_i)^2+
-                           (\operatorname{Sobel}_y g_i)^2\right)
+S_i^{\mathrm{TG}}=M_w\left((\mathrm{Sobel}_x\,g_i)^2+
+                           (\mathrm{Sobel}_y\,g_i)^2\right)
 ```
 
 Tenengrad 使用 3×3 Sobel 核。两种指标均用局部均值减小零散决策，滤波边界采用 OpenCV 默认的 `BORDER_REFLECT_101`。较大窗口会把更宽的区域一起判断，因此可能跨过真实的焦点分界。
@@ -279,7 +279,7 @@ b &= M_{2r+1}(p)-aM_{2r+1}(g)
 ```
 
 ```math
-\operatorname{GF}(g,p;r,\epsilon)=M_{2r+1}(a)\,g+M_{2r+1}(b)
+\mathrm{GF}(g,p;r,\epsilon)=M_{2r+1}(a)\,g+M_{2r+1}(b)
 ```
 
 $`\epsilon`$ 抑制局部斜率过大，单位与归一化强度的平方一致。实现调用 `cv::ximgproc::guidedFilter`，输出深度为 `CV_32F`，在完整分辨率上计算；依赖 opencv_contrib 的 `ximgproc`。[原论文][guided-paper]、[OpenCV 接口][opencv-guided]。
@@ -317,8 +317,8 @@ D_i &= I_i-B_i
 
 ```math
 \begin{aligned}
-W_i^B &= \mathcal{N}\!\left(\operatorname{clip}(\operatorname{GF}(g_i,P_i;r_b,\epsilon_b))\right) \\
-W_i^D &= \mathcal{N}\!\left(\operatorname{clip}(\operatorname{GF}(g_i,P_i;r_d,\epsilon_d))\right)
+W_i^B &= \mathcal{N}\!\left(\mathrm{clip}(\mathrm{GF}(g_i,P_i;r_b,\epsilon_b))\right) \\
+W_i^D &= \mathcal{N}\!\left(\mathrm{clip}(\mathrm{GF}(g_i,P_i;r_d,\epsilon_d))\right)
 \end{aligned}
 ```
 
@@ -347,15 +347,15 @@ F=\sum_i W_i^B B_i+\sum_i W_i^D D_i
 ```math
 \begin{aligned}
 G_i^0 &= I_i \\
-G_i^{k+1} &= \operatorname{down}(G_i^k) \\
-W_i^{k+1} &= \operatorname{down}(W_i^k)
+G_i^{k+1} &= \mathrm{down}(G_i^k) \\
+W_i^{k+1} &= \mathrm{down}(W_i^k)
 \end{aligned}
 ```
 
 非最粗层的拉普拉斯频带为：
 
 ```math
-L_i^k=G_i^k-\operatorname{up}(G_i^{k+1})
+L_i^k=G_i^k-\mathrm{up}(G_i^{k+1})
 ```
 
 最粗层直接使用 $`L_i^{K-1}=G_i^{K-1}`$。每层按实际权重和融合：
@@ -364,7 +364,7 @@ L_i^k=G_i^k-\operatorname{up}(G_i^{k+1})
 \begin{aligned}
 \bar{L}^k &= \frac{\sum_i W_i^k L_i^k}{\max(\sum_i W_i^k,10^{-12})} \\
 F^{K-1} &= \bar{L}^{K-1} \\
-F^k &= \operatorname{up}(F^{k+1})+\bar{L}^k
+F^k &= \mathrm{up}(F^{k+1})+\bar{L}^k
 \end{aligned}
 ```
 
@@ -481,9 +481,9 @@ B(x), & \hat{m}(x)=0
 
 ```math
 \begin{aligned}
-s_i &= \operatorname{mean}_{\Omega}
-\left[(\operatorname{Scharr}_x g_i)^2+
-      (\operatorname{Scharr}_y g_i)^2\right] \\
+s_i &= \mathrm{mean}_{\Omega}
+\left[(\mathrm{Scharr}_x\,g_i)^2+
+      (\mathrm{Scharr}_y\,g_i)^2\right] \\
 \mathcal{S} &= \left\{i:s_i\ge\alpha\max_j s_j\right\}
 \end{aligned}
 ```
@@ -500,7 +500,7 @@ d_i(x) &=
 \Delta_i(x), & \Delta_i(x)>\tau \\
 0, & \Delta_i(x)\le\tau
 \end{cases} \\
-R_i &= \operatorname{GF}(g_i,d_i;r,\epsilon)
+R_i &= \mathrm{GF}(g_i,d_i;r,\epsilon)
 \end{aligned}
 ```
 
@@ -510,7 +510,7 @@ R_i &= \operatorname{GF}(g_i,d_i;r,\epsilon)
 
 ```math
 \begin{aligned}
-W_i &= \mathcal{N}\!\left(\operatorname{clip}(\operatorname{GF}(g_i,P_i;r,\epsilon))\right) \\
+W_i &= \mathcal{N}\!\left(\mathrm{clip}(\mathrm{GF}(g_i,P_i;r,\epsilon))\right) \\
 F &= \sum_{i\in\mathcal{S}} W_i I_i
 \end{aligned}
 ```
