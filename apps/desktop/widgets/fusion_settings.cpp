@@ -204,23 +204,32 @@ FusionSettings::FusionSettings(QWidget* parent) : QGroupBox(parent) {
     gfgfgf_.selection_ratio = createRatio(gfgfgf_.panel, QStringLiteral("gfgfgfSelectionRatio"),
                                          defaults.gfgfgf.selection_ratio, 0.01);
     gfgfgf_.selection_ratio->setToolTip(QStringLiteral(
-        "范围：0–1。相对最大梯度能量的筛帧阈值，用于保留具有足够清晰细节的输入。\n"
-        "数值越大，筛选越严格。"));
-    addParameter(gfgfgf_form, QStringLiteral("梯度筛选比"), gfgfgf_.selection_ratio, label_width);
+        "范围：0–1。可选的全局 Scharr 梯度筛帧比例，0 保留全部输入。\n"
+        "数值越大，筛选越严格，可能排除只含少量清晰区域的图片。"));
+    addParameter(gfgfgf_form, QStringLiteral("可选筛帧比"), gfgfgf_.selection_ratio, label_width);
     gfgfgf_.difference_threshold = createRatio(gfgfgf_.panel, QStringLiteral("gfgfgfDifferenceThreshold"),
                                               defaults.gfgfgf.difference_threshold, 0.001);
     gfgfgf_.difference_threshold->setToolTip(QStringLiteral(
-        "范围：0–1。忽略不大于此值的局部绝对差异，再生成融合决策。\n"
-        "数值越小，对较细微的差异越敏感。"));
-    addParameter(gfgfgf_form, QStringLiteral("差异阈值"), gfgfgf_.difference_threshold, label_width);
+        "范围：0–1。类高斯四邻域梯度达到此阈值时采用梯度响应。\n"
+        "较弱的响应改用图像与局部均值之差；输入在 [0,1] 范围内计算。"));
+    addParameter(gfgfgf_form, QStringLiteral("梯度阈值"), gfgfgf_.difference_threshold, label_width);
     gfgfgf_.guided_radius = createRadius(gfgfgf_.panel, QStringLiteral("gfgfgfGuidedRadius"),
                                         defaults.gfgfgf.guided_radius);
     gfgfgf_.guided_radius->setToolTip(QStringLiteral(
-        "范围：1–255 px。两阶段引导滤波的窗口半径，控制融合权重过渡的平滑范围。"));
+        "范围：1–255 px。两次快速引导滤波共用半径，按原图像素计。\n"
+        "先优化聚焦响应，再优化融合权重。"));
     addParameter(gfgfgf_form, QStringLiteral("引导半径"), gfgfgf_.guided_radius, label_width);
     gfgfgf_.guided_epsilon = createEpsilon(gfgfgf_.panel, QStringLiteral("gfgfgfGuidedEpsilon"),
                                           defaults.gfgfgf.guided_epsilon);
     addParameter(gfgfgf_form, QStringLiteral("引导正则项"), gfgfgf_.guided_epsilon, label_width);
+    gfgfgf_.guided_subsample = new ScrollSafeWidget<QSpinBox>(gfgfgf_.panel);
+    gfgfgf_.guided_subsample->setObjectName("gfgfgfGuidedSubsample");
+    gfgfgf_.guided_subsample->setRange(1, 16);
+    gfgfgf_.guided_subsample->setValue(defaults.gfgfgf.guided_subsample);
+    gfgfgf_.guided_subsample->setToolTip(QStringLiteral(
+        "范围：1–16。快速引导滤波计算局部系数时的下采样倍数。\n"
+        "1 使用完整分辨率；较大值减少计算量，可能影响细小边界。"));
+    addParameter(gfgfgf_form, QStringLiteral("下采样倍数"), gfgfgf_.guided_subsample, label_width);
 
     auto* reset = new QPushButton(QStringLiteral("恢复当前方法默认值"), this);
     reset->setObjectName("resetFusionOptions");
@@ -258,6 +267,7 @@ FusionOptions FusionSettings::options() const {
     result.gfgfgf.difference_threshold = gfgfgf_.difference_threshold->value();
     result.gfgfgf.guided_radius = gfgfgf_.guided_radius->value();
     result.gfgfgf.guided_epsilon = gfgfgf_.guided_epsilon->value();
+    result.gfgfgf.guided_subsample = gfgfgf_.guided_subsample->value();
     // 桌面只展示融合图片，不要求核心保留每张输入的权重图，避免额外内存占用。
     // DTCWT 按尺度和方向选择系数，没有单一空间权重图；界面同样只使用其融合结果。
     return result;
@@ -284,7 +294,7 @@ void FusionSettings::updateMethodVisibility() {
         method_hint_->setText(QStringLiteral("用双树复小波比较各尺度、各方向的细节，再重建图像。"));
         break;
     case FusionMethod::Gfgfgf:
-        method_hint_->setText(QStringLiteral("先按梯度筛选输入，再结合局部差异与引导滤波生成结果。"));
+        method_hint_->setText(QStringLiteral("用类高斯四邻域梯度估计清晰度，经两次快速引导滤波融合；筛帧默认关闭。"));
         break;
     }
 }
@@ -325,6 +335,7 @@ void FusionSettings::resetCurrentMethod() {
         gfgfgf_.difference_threshold->setValue(defaults.gfgfgf.difference_threshold);
         gfgfgf_.guided_radius->setValue(defaults.gfgfgf.guided_radius);
         gfgfgf_.guided_epsilon->setValue(defaults.gfgfgf.guided_epsilon);
+        gfgfgf_.guided_subsample->setValue(defaults.gfgfgf.guided_subsample);
         break;
     }
 }

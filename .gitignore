@@ -1,5 +1,6 @@
 /build/
 /outputs/
+/tmp/
 /CMakeUserPresets.json
 /.vs/
 /.idea/

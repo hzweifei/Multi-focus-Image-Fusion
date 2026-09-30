@@ -1,13 +1,15 @@
-// 算法流程参考 OpenFocus 的 fusion_methods/gfg_fgf.py，提交 bf3a3a15c1c508fbba117f6e98a64e49a087434e。
+// 依据付宏语等《多聚焦显微图像融合算法》(2024), DOI:10.3788/LOP232015 的公式 (1)-(15)。
+// 可选 Scharr 筛帧沿用 OpenFocus fusion_methods/gfg_fgf.py，提交 bf3a3a15c1c508fbba117f6e98a64e49a087434e。
 // 参考项目为 MIT 许可，Copyright (c) 2025 OpenFocus Contributors；完整声明见 THIRD_PARTY_NOTICES.md。
-// 本文件独立实现梯度筛帧、局部差异和两阶段引导滤波，沿用参考默认值及选通道策略。
-// 与上游相比，补齐灰度/高位深/小图支持、无纹理等权处理与筛选后原输入索引映射。
+// 默认保留全部焦面；数值容差、剩余平局等权、彩色灰度引导与权重截断为工程补充。
 #include "fusion/gfgfgf/gfgfgf.hpp"
+#include "fusion/gfgfgf/focus_information.hpp"
+#include "fusion/common/fast_guided_filter.hpp"
 #include "fusion/common/guided_filter.hpp"
 #include "fusion/common/weight_map.hpp"
+#include "common/grayscale.hpp"
 #include "common/progress.hpp"
 #include <opencv2/imgproc.hpp>
-#include <opencv2/ximgproc/edge_filter.hpp>
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -19,7 +21,8 @@ void validateGfgfgfOptions(const GfgfgfOptions& options) {
     if (options.difference_window < 1 || options.difference_window > 255 || options.difference_window % 2 == 0 ||
         !std::isfinite(options.selection_ratio) || options.selection_ratio < 0 || options.selection_ratio > 1 ||
         !std::isfinite(options.difference_threshold) || options.difference_threshold < 0 || options.difference_threshold > 1 ||
-        options.guided_radius < 1 || options.guided_radius > 255)
+        options.guided_radius < 1 || options.guided_radius > 255 ||
+        options.guided_subsample < 1 || options.guided_subsample > 16)
         throw std::invalid_argument("Invalid GFG-FGF options; check windows, thresholds and guided epsilon");
     validateGuidedEpsilon(options.guided_epsilon);
 }
@@ -27,11 +30,6 @@ void validateGfgfgfOptions(const GfgfgfOptions& options) {
 MethodResult gfgfgfFusion(const std::vector<cv::Mat>& images, const GfgfgfOptions& options,
                           const ProgressCallback& progress) {
     const auto size = images.front().size();
-    int channel = 0;
-    if (images.front().channels() == 3) {
-        const cv::Scalar totals = cv::sum(images.front());
-        for (int c = 1; c < 3; ++c) if (totals[c] > totals[channel]) channel = c;
-    }
     std::vector<cv::Mat> guides;
     std::vector<double> scores;
     guides.reserve(images.size());
@@ -39,18 +37,18 @@ MethodResult gfgfgfFusion(const std::vector<cv::Mat>& images, const GfgfgfOption
     double maximum_score = 0;
     for (size_t i = 0; i < images.size(); ++i) {
         report(progress, 30 + static_cast<int>(15 * i / images.size()), "focus");
-        cv::Mat guide;
-        if (images[i].channels() == 1) guide = images[i];
-        else cv::extractChannel(images[i], guide, channel);
-        cv::Mat gx, gy;
-        // Scharr 核等同参考实现的 [-3,-10,-3;0,0,0;3,10,3] 及其转置。
-        cv::Scharr(guide, gx, CV_32F, 1, 0, 1, 0, cv::BORDER_REFLECT);
-        cv::Scharr(guide, gy, CV_32F, 0, 1, 1, 0, cv::BORDER_REFLECT);
-        const cv::Mat energy = gx.mul(gx) + gy.mul(gy);
-        // 常规尺寸排除一圈边界；2 像素小图改用全图，避免空 ROI 和 NaN 平均值。
-        const cv::Rect interior = size.width > 2 && size.height > 2
-            ? cv::Rect(1, 1, size.width - 2, size.height - 2) : cv::Rect(0, 0, size.width, size.height);
-        const double score = cv::mean(energy(interior))[0];
+        cv::Mat guide = grayscale(images[i]);
+        double score = 0;
+        if (options.selection_ratio > 0) {
+            cv::Mat gx, gy;
+            // 保留旧筛帧扩展，但默认不执行，避免丢弃只含少量清晰结构的焦面。
+            cv::Scharr(guide, gx, CV_32F, 1, 0, 1, 0, cv::BORDER_REFLECT);
+            cv::Scharr(guide, gy, CV_32F, 0, 1, 1, 0, cv::BORDER_REFLECT);
+            const cv::Mat energy = gx.mul(gx) + gy.mul(gy);
+            const cv::Rect interior = size.width > 2 && size.height > 2
+                ? cv::Rect(1, 1, size.width - 2, size.height - 2) : cv::Rect(0, 0, size.width, size.height);
+            score = cv::mean(energy(interior))[0];
+        }
         scores.push_back(score);
         maximum_score = std::max(maximum_score, score);
         guides.push_back(std::move(guide));
@@ -66,26 +64,31 @@ MethodResult gfgfgfFusion(const std::vector<cv::Mat>& images, const GfgfgfOption
     for (size_t j = 0; j < selected.size(); ++j) {
         report(progress, 45 + static_cast<int>(15 * j / selected.size()), "focus");
         const auto i = selected[j];
-        cv::Mat local_mean, difference, response;
-        cv::blur(guides[i], local_mean, {options.difference_window, options.difference_window});
-        cv::absdiff(guides[i], local_mean, difference);
-        cv::threshold(difference, difference, options.difference_threshold, 0, cv::THRESH_TOZERO);
-        // 第一遍处理的是响应，不是概率权重。官方滤波允许有符号输出，不能提前裁到 [0,1]。
-        cv::ximgproc::guidedFilter(guides[i], difference, response,
-                                  options.guided_radius, options.guided_epsilon, CV_32F);
+        const cv::Mat information = paperFocusInformation(guides[i], options.difference_window,
+                                                          options.difference_threshold);
+        // 第一遍处理聚焦信息，保留有符号输出；它不是概率或融合权重。
+        cv::Mat response = fastGuidedFilter(guides[i], information, options.guided_radius,
+                                            options.guided_epsilon, options.guided_subsample);
         responses.push_back(std::move(response));
     }
     report(progress, 60, "weights");
-    auto decisions = decisionWeights(responses);
+    auto decisions = paperDecisionWeights(responses);
     responses.clear();
     std::vector<cv::Mat> weights;
     weights.reserve(selected.size());
     for (size_t j = 0; j < selected.size(); ++j) {
         report(progress, 60 + static_cast<int>(15 * j / selected.size()), "weights");
-        // 第二遍滤波决策权重；公共 wrapper 裁到 [0,1]，再只在保留帧之间归一化。
-        weights.push_back(guidedFilter(guides[selected[j]], decisions[j],
-                                      options.guided_radius, options.guided_epsilon));
+        // 第二遍处理决策；系数上采样后仍由原分辨率图像引导，权重裁剪后归一化。
+        cv::Mat weight = fastGuidedFilter(guides[selected[j]], decisions[j], options.guided_radius,
+                                          options.guided_epsilon, options.guided_subsample);
+        decisions[j].release();
+        guides[selected[j]].release();
+        cv::max(weight, 0, weight);
+        cv::min(weight, 1, weight);
+        weights.push_back(std::move(weight));
     }
+    decisions.clear();
+    guides.clear();
     normalizeWeights(weights);
     MethodResult result;
     result.image = cv::Mat::zeros(size, images.front().type());

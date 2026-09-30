@@ -41,7 +41,7 @@ private:
         QSpinBox* levels = nullptr;
         QSpinBox* activity_window = nullptr;
     };
-    /// 梯度筛帧、局部差异判定与引导滤波各有独立参数，切换方法时全部保留。
+    /// 可选筛帧、GFG 聚焦度量与快速引导滤波各有独立参数，切换方法时全部保留。
     struct GfgfgfFields {
         QWidget* panel = nullptr;
         QSpinBox* difference_window = nullptr;
@@ -49,6 +49,7 @@ private:
         QDoubleSpinBox* difference_threshold = nullptr;
         QSpinBox* guided_radius = nullptr;
         QDoubleSpinBox* guided_epsilon = nullptr;
+        QSpinBox* guided_subsample = nullptr;
     };
 
     /// 更新当前方法说明及表单可见性，保留隐藏表单中的值。

@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
             options.dtcwt.levels = 4;
             cv::imwrite((dir / "fused_dtcwt.png").string(), mif::fuse({first, second}, options).image);
             options.method = mif::FusionMethod::Gfgfgf;
-            options.gfgfgf.selection_ratio = 0.15;
+            // 默认保留全部焦面；可设置 selection_ratio > 0 启用额外的全图筛帧。
             cv::imwrite((dir / "fused_gfgfgf.png").string(), mif::fuse({first, second}, options).image);
             std::cout << "Demo written to " << dir << '\n'; return 0;
         }

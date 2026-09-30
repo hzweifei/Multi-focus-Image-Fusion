@@ -18,7 +18,7 @@ algorithms/
 │   │   ├── laplacian_pyramid_options.hpp # 拉普拉斯金字塔的完整参数
 │   │   ├── dct_options.hpp               # 块尺寸与一致性窗口
 │   │   ├── dtcwt_options.hpp             # 复小波层数与活动度窗口
-│   │   └── gfgfgf_options.hpp            # 梯度筛帧与两阶段引导滤波参数
+│   │   └── gfgfgf_options.hpp            # GFG 聚焦度量、可选筛帧与快速引导滤波参数
 │   ├── registration.hpp           # 独立配准入口 registerImages() 与 RegistrationResult
 │   ├── registration_options.hpp   # 配准算法、ECC 变换模型与参数
 │   ├── pipeline.hpp               # 组合入口 registerAndFuse() 与 PipelineResult
@@ -41,10 +41,11 @@ algorithms/
     │   │   └── laplacian_pyramid.cpp # 本方法校验、权重、金字塔融合与诊断
     │   ├── dct/                      # 块方差选帧与中值一致性检查
     │   ├── dtcwt/                    # 双树复小波引擎、六方向系数融合
-    │   ├── gfgfgf/                   # 梯度筛帧、差异响应、两阶段官方引导滤波
+    │   ├── gfgfgf/                   # 四邻域聚焦度量、Sobel 平局与两次快速引导滤波
     │   └── common/
     │       ├── focus_measure.hpp/.cpp # 清晰度校验、评分、灰度图与初始决策图
     │       ├── guided_filter.hpp/.cpp # OpenCV ximgproc 引导滤波的权重适配
+    │       ├── fast_guided_filter.hpp/.cpp # 低分辨率估计系数、原分辨率引导输出
     │       └── weight_map.hpp/.cpp    # 权重归一化、通道扩展与来源索引
     └── registration/
         ├── registration.hpp      # 内部 Estimator 约定与方法工厂
@@ -84,7 +85,9 @@ algorithms/
 | `src/registration/registration.hpp` | 项目内部的变换估计器约定 |
 | `fusion/common/focus_measure.cpp` | 清晰度评分与初始决策工具；指标本身不是完整融合方法 |
 | `fusion/common/guided_filter.cpp` | 调用官方 `cv::ximgproc::guidedFilter` 并裁剪权重 |
+| `fusion/common/fast_guided_filter.cpp` | GFG-FGF 使用的快速引导滤波，双精度局部统计和系数上采样 |
 | `fusion/guided_filter/guided_filter.cpp` | 完整的双尺度融合方法，包含校验、基础层、细节层及其权重和重建 |
+| `fusion/gfgfgf/gfgfgf.cpp` | 论文 GFG 聚焦图、跨焦面 Sobel 平局判断、快速引导滤波及可选 Scharr 筛帧 |
 
 `FocusOptions` 供 GFF 和拉普拉斯金字塔复用，两者各持有自己的 `focus` 对象。
 其他方法使用各自的评分或变换规则，不强制引入 `FocusOptions`。

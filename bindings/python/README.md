@@ -74,7 +74,7 @@ result = mif.register_and_fuse(images, registration_options, fusion_options)
 | `LAPLACIAN_PYRAMID` | `laplacian_pyramid` | 拉普拉斯金字塔 |
 | `DCT` | `dct` | 块方差选择与一致性处理，不显式融合 DCT 系数 |
 | `DTCWT` | `dtcwt` | 双树复小波系数融合 |
-| `GFGFGF` | `gfgfgf` | 梯度筛帧、局部差异和两阶段引导滤波 |
+| `GFGFGF` | `gfgfgf` | 类高斯四邻域聚焦度量、Sobel 平局处理与两次快速引导滤波 |
 
 | 参数结构体 | 字段与默认值 |
 |---|---|
@@ -83,14 +83,19 @@ result = mif.register_and_fuse(images, registration_options, fusion_options)
 | `LaplacianPyramidOptions` | `focus=FocusOptions()`、`detail_radius=3`、`detail_epsilon=0.0001`、`levels=5` |
 | `DctOptions` | `block_size=8`、`consistency_window=7` |
 | `DtcwtOptions` | `levels=4`、`activity_window=3` |
-| `GfgfgfOptions` | `difference_window=7`、`selection_ratio=0.15`、`difference_threshold=0.005`、`guided_radius=5`、`guided_epsilon=0.3` |
+| `GfgfgfOptions` | `difference_window=7`、`selection_ratio=0`、`difference_threshold=0.005`、`guided_radius=5`、`guided_epsilon=0.3`、`guided_subsample=4` |
 
 DCT 的 `block_size` 为 `[2,128]`，`consistency_window` 为 `[1,31]` 内的奇数，单位是块。
 DTCWT 的 `levels` 为 `[1,16]`，`activity_window` 为 `[1,31]` 内的奇数，作用于各层系数。
 GFG-FGF 的 `difference_window` 为 `[1,255]` 内的奇数，`selection_ratio` 和
 `difference_threshold` 为 `[0,1]` 内的有限数，`guided_radius` 为 `[1,255]`，
-`guided_epsilon` 为 `[1e-6, float32 最大值]` 范围内的有限数，最大值约为 `3.4e38`。
-筛帧比例相对于最高梯度分数，差异阈值作用于归一化图像。
+`guided_epsilon` 为 `[1e-6, float32 最大值]` 范围内的有限数，最大值约为 `3.4e38`，
+`guided_subsample` 为 `[1,16]`。
+筛帧比例相对于最高 Scharr 梯度分数，默认 0 保留全部输入。
+`difference_threshold` 保留原字段名，现表示 GFG 梯度阈值：梯度达到阈值时采用梯度响应，
+较弱时采用图像与局部均值的绝对差。快速滤波倍数为 1 时使用完整分辨率，
+较大倍数在低分辨率计算系数，再结合原分辨率引导图生成输出。
+均值窗口、滤波半径、正则项和下采样倍数是项目默认设置，论文没有给出这些参数的完整取值。
 GFF 的 `base_epsilon`、`detail_epsilon` 和金字塔的 `detail_epsilon` 采用相同范围；
 该范围适应官方引导滤波的浮点精度，防止平坦区域除零或转换为 float32 时溢出。
 ECC 的 `RegistrationOptions.epsilon` 是独立的收敛阈值，不受此融合参数范围影响。
@@ -108,6 +113,7 @@ options.laplacian_pyramid.focus.window = 13
 options.laplacian_pyramid.levels = 4
 options.gfgfgf.difference_window = 9
 options.gfgfgf.guided_radius = 5
+options.gfgfgf.guided_subsample = 4
 options.method = mif.FusionMethod.GFGFGF
 image = mif.fuse(images, options)
 ```
@@ -179,5 +185,6 @@ ECC 需要较好的初始对齐；SIFT 需要足够的可匹配纹理。七个�
 ECC 的模型由 `motion_model` 选择，融合参数存放在各方法对象内。
 旧 `Alignment` 枚举和扁平参数已移除，完整对照统一见
 [接口迁移](https://github.com/hzweifei/Multi-focus-Image-Fusion/blob/HEAD/docs/sdk.md#接口迁移)。
-引导滤波使用官方 `ximgproc` 实现，边界结果可能与旧版不同；通用诊断代码应允许
-DTCWT 返回空来源图和权重。
+GFF 和金字塔使用官方 `ximgproc`；GFG-FGF 使用论文的四邻域聚焦度量、Sobel 平局处理
+和快速引导滤波，`difference_threshold` 已改为梯度阈值，`selection_ratio` 默认改为 0。
+更新后应重新检查原有 GFG-FGF 参数和结果；通用诊断代码应允许 DTCWT 返回空来源图和权重。

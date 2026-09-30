@@ -111,7 +111,12 @@ const auto& transforms = result.transforms;
 | `LaplacianPyramid` | `laplacian_pyramid` | `focus`、细节滤波半径与正则项、`levels` |
 | `Dct` | `dct` | `block_size`、`consistency_window` |
 | `Dtcwt` | `dtcwt` | `levels`、`activity_window` |
-| `Gfgfgf` | `gfgfgf` | `difference_window`、`selection_ratio`、`difference_threshold`、`guided_radius`、`guided_epsilon` |
+| `Gfgfgf` | `gfgfgf` | `difference_window`、`selection_ratio`、`difference_threshold`、`guided_radius`、`guided_epsilon`、`guided_subsample` |
+
+GFG-FGF 默认 `selection_ratio=0` 保留全部输入；`difference_threshold=0.005` 表示
+类高斯四邻域梯度阈值，弱梯度位置使用局部均值残差。`guided_subsample` 范围 `[1,16]`、
+默认 4；1 使用完整分辨率，其余值在缩小的图上估计引导滤波系数。
+窗口 7、半径 5、正则项 0.3 和下采样倍数 4 为项目默认值，论文没有完整给出这些设置。
 
 GFF 的 `base_epsilon`、`detail_epsilon`，金字塔的 `detail_epsilon`，以及 GFG-FGF 的
 `guided_epsilon` 均须为 `[1e-6, FLT_MAX]` 范围内的有限数；`FLT_MAX` 约为 `3.4e38`。

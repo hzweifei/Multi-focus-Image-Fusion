@@ -6,7 +6,7 @@
 ## 功能
 
 - 五种传统融合方法：双尺度引导滤波（GFF）、拉普拉斯金字塔、块方差（DCT）、DTCWT 双树复小波、GFG-FGF。
-  各方法独立配置，引导滤波调用 OpenCV `ximgproc` 官方实现。
+  各方法独立配置；GFF 和金字塔使用 OpenCV `ximgproc`，GFG-FGF 按论文实现四邻域聚焦度量、Sobel 平局处理与快速引导滤波。
 - 可选 ECC 配准（平移 / 仿射 / 单应性）或 SIFT + RANSAC 单应性配准，自动裁剪共同有效区域。
   配准与融合可独立调用，也可一步完成。
 - 支持灰度 / BGR、8 位和 16 位无符号整数、`[0,1]` float32；输出保留输入位深与通道数。
@@ -112,6 +112,12 @@ fused = result["image"]  # NumPy；彩色为 BGR
 `mif.fuse()` 只返回图像；`mif.fuse_detailed()` 额外返回方法支持的诊断；
 `mif.register_images()` 仅配准。DTCWT 没有单一空间来源图，`focus_indices=None`、`weights=[]`。
 配置、所有权和返回字典见 [Python 接口](bindings/python/README.md)。
+
+采用论文《多聚焦显微图像融合算法》的流程时，选择 `FusionMethod.GFGFGF`。
+该方法默认保留全部焦面（`selection_ratio=0`），使用类高斯四邻域梯度和均值残差生成聚焦图，
+经快速引导滤波、跨焦面最大值及 Sobel 平局判断后细化融合权重。
+`guided_subsample=4` 控制快速滤波的下采样倍数，设为 1 可使用完整分辨率。
+项目参数默认值、论文未给出的设置和数值处理差异见 [GFG-FGF 算法说明](docs/algorithm.md#45-gfg-fgf四邻域聚焦度量与两次快速引导滤波)。
 
 当前整栈驻留内存，尚未实现大图分块、批量任务或安装包。真实采集图像的效果仍需评估，
 来源索引不能当作物理深度；测试范围见 [验证指南](docs/verification.md)。第三方许可见

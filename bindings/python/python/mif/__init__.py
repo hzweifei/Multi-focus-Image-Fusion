@@ -66,7 +66,10 @@ def fuse(images, options=None):
         dct 包含 block_size、consistency_window，实际按块方差选帧。
         dtcwt 包含 levels、activity_window，在六方向复小波系数域融合。
         gfgfgf 包含 difference_window、selection_ratio、difference_threshold、
-        guided_radius、guided_epsilon，进行筛帧与两阶段官方引导滤波。
+        guided_radius、guided_epsilon、guided_subsample，采用四邻域聚焦度量、
+        Sobel 平局判断与两次快速引导滤波；selection_ratio 默认 0 保留全部帧。
+        difference_threshold 是梯度阈值，弱梯度位置使用均值残差；
+        guided_subsample 范围 [1,16]，默认 4，1 使用完整分辨率。
         所有引导滤波 epsilon 须在 [1e-6, float32 最大有限值]，防止平坦区
         数值退化或 float 转换溢出；超出范围抛出 ValueError。
 

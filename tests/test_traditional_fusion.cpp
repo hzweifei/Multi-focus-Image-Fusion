@@ -222,6 +222,8 @@ void testGfgfgfFusion() {
     const std::vector<cv::Mat> images{flat, stack[0], flat, flat, stack[1]};
     mif::FusionOptions options;
     options.method = mif::FusionMethod::Gfgfgf;
+    // 全局筛帧属于可选扩展，论文默认比较所有焦面；此处显式启用筛帧来验证索引映射。
+    options.gfgfgf.selection_ratio = 0.15;
     options.keep_weight_maps = true;
     const auto result = mif::fuse(images, options);
     checkDiagnostics(result, sharp.size(), images.size());
@@ -242,14 +244,13 @@ void testGfgfgfFusion() {
     require(cv::countNonZero(single.focus_indices != 2) == 0 &&
             cv::norm(single.image, sharp, cv::NORM_INF) <= 1, "GFG-FGF mishandled its sole retained frame");
 
-    // 阈值 1 抑制全部局部差异、筛选比例 0 保留全部图像，此时应均匀融合而不是除零变黑。
+    // 高阈值应回退到均值残差，不能把全部聚焦信息置零后等权平均。
     options.gfgfgf.selection_ratio = 0;
     options.gfgfgf.difference_threshold = 1;
-    const auto uniform = mif::fuse({flat, sharp}, options);
-    checkDiagnostics(uniform, sharp.size(), 2);
-    for (const auto& weight : uniform.weights)
-        require(cv::norm(weight, cv::Mat(sharp.size(), CV_32F, cv::Scalar(0.5)), cv::NORM_INF) < 2e-6,
-                "GFG-FGF zero-response fallback is not symmetric");
+    const auto residual = mif::fuse({flat, sharp}, options);
+    checkDiagnostics(residual, sharp.size(), 2);
+    require(mae(residual.image, sharp) < mae(flat, sharp) * 0.25,
+            "GFG-FGF discarded the mean residual below the gradient threshold");
 
     const double nan = std::numeric_limits<double>::quiet_NaN();
     for (const auto& invalidate : std::vector<std::function<void(mif::GfgfgfOptions&)>>{
@@ -258,6 +259,7 @@ void testGfgfgfFusion() {
             [nan](auto& o) { o.selection_ratio = nan; }, [](auto& o) { o.difference_threshold = -0.1; },
             [](auto& o) { o.difference_threshold = 1.1; }, [nan](auto& o) { o.difference_threshold = nan; },
             [](auto& o) { o.guided_radius = 0; }, [](auto& o) { o.guided_radius = 256; },
+            [](auto& o) { o.guided_subsample = 0; }, [](auto& o) { o.guided_subsample = 17; },
             [](auto& o) { o.guided_epsilon = 0; }, [nan](auto& o) { o.guided_epsilon = nan; }}) {
         options.gfgfgf = {};
         invalidate(options.gfgfgf);

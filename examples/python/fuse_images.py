@@ -24,7 +24,9 @@ options.guided_filter.detail_radius = 3
 # 改用金字塔时可设置 options.laplacian_pyramid.focus.window 和 .levels。
 # 块方差：options.method = mif.FusionMethod.DCT；options.dct.block_size = 8。
 # 复小波：options.method = mif.FusionMethod.DTCWT；options.dtcwt.levels = 4。
-# GFG-FGF：options.method = mif.FusionMethod.GFGFGF；options.gfgfgf.selection_ratio = 0.15。
+# GFG-FGF：options.method = mif.FusionMethod.GFGFGF；options.gfgfgf.guided_subsample = 4。
+# 默认保留全部焦面；可选筛帧设置 options.gfgfgf.selection_ratio = 0.15。
+# difference_threshold 是 GFG 梯度阈值；弱梯度位置使用局部均值残差。
 # 此入口只执行融合；配准使用独立的 RegistrationOptions 和 register_images。
 result = mif.fuse(images, options)
 suffix = sys.argv[1].lower().rsplit(".", 1)[-1]

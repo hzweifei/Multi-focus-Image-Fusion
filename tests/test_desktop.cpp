@@ -171,6 +171,7 @@ struct FusionControls {
     QDoubleSpinBox* gfgfgf_threshold;
     QSpinBox* gfgfgf_radius;
     QDoubleSpinBox* gfgfgf_epsilon;
+    QSpinBox* gfgfgf_subsample;
     QPushButton* reset;
 
     static MethodFields findFields(QWidget& parent, const QString& prefix, const QString& panel_name) {
@@ -204,12 +205,13 @@ struct FusionControls {
           gfgfgf_threshold(window.findChild<QDoubleSpinBox*>("gfgfgfDifferenceThreshold")),
           gfgfgf_radius(window.findChild<QSpinBox*>("gfgfgfGuidedRadius")),
           gfgfgf_epsilon(window.findChild<QDoubleSpinBox*>("gfgfgfGuidedEpsilon")),
+          gfgfgf_subsample(window.findChild<QSpinBox*>("gfgfgfGuidedSubsample")),
           reset(window.findChild<QPushButton*>("resetFusionOptions")) {
         require(settings && method && base_radius && base_epsilon && levels && reset,
                 "Fusion settings controls are missing");
         require(dct_panel && dtcwt_panel && gfgfgf_panel && dct_block_size && dct_window &&
                 dtcwt_levels && dtcwt_window && gfgfgf_window && gfgfgf_selection &&
-                gfgfgf_threshold && gfgfgf_radius && gfgfgf_epsilon,
+                gfgfgf_threshold && gfgfgf_radius && gfgfgf_epsilon && gfgfgf_subsample,
                 "New fusion method panels or parameters are missing");
     }
 
@@ -243,6 +245,7 @@ struct FusionControls {
         gfgfgf_threshold->setValue(options.gfgfgf.difference_threshold);
         gfgfgf_radius->setValue(options.gfgfgf.guided_radius);
         gfgfgf_epsilon->setValue(options.gfgfgf.guided_epsilon);
+        gfgfgf_subsample->setValue(options.gfgfgf.guided_subsample);
         selectMethod(options.method);
     }
 
@@ -267,7 +270,8 @@ struct FusionControls {
                 close(actual.gfgfgf.selection_ratio, expected.gfgfgf.selection_ratio) &&
                 close(actual.gfgfgf.difference_threshold, expected.gfgfgf.difference_threshold) &&
                 actual.gfgfgf.guided_radius == expected.gfgfgf.guided_radius &&
-                close(actual.gfgfgf.guided_epsilon, expected.gfgfgf.guided_epsilon),
+                close(actual.gfgfgf.guided_epsilon, expected.gfgfgf.guided_epsilon) &&
+                actual.gfgfgf.guided_subsample == expected.gfgfgf.guided_subsample,
                 "Fusion method configurations were mixed, reset or omitted");
     }
 
@@ -284,7 +288,7 @@ struct FusionControls {
         return {method, guided.focus, guided.window, guided.radius, guided.epsilon, base_radius, base_epsilon,
                 pyramid.focus, pyramid.window, pyramid.radius, pyramid.epsilon, levels,
                 dct_block_size, dct_window, dtcwt_levels, dtcwt_window, gfgfgf_window,
-                gfgfgf_selection, gfgfgf_threshold, gfgfgf_radius, gfgfgf_epsilon};
+                gfgfgf_selection, gfgfgf_threshold, gfgfgf_radius, gfgfgf_epsilon, gfgfgf_subsample};
     }
 };
 
@@ -313,6 +317,7 @@ mif::FusionOptions customFusionOptions() {
     options.gfgfgf.difference_threshold = 0.012;
     options.gfgfgf.guided_radius = 4;
     options.gfgfgf.guided_epsilon = 0.2;
+    options.gfgfgf.guided_subsample = 2;
     return options;
 }
 
@@ -660,7 +665,8 @@ void verifyFusionSettings() {
             controls.dtcwt_levels->minimum() == 1 && controls.dtcwt_levels->maximum() == 16 &&
             controls.dtcwt_window->minimum() == 1 && controls.dtcwt_window->maximum() == 31 &&
             controls.gfgfgf_window->minimum() == 1 && controls.gfgfgf_window->maximum() == 255 &&
-            controls.gfgfgf_radius->minimum() == 1 && controls.gfgfgf_radius->maximum() == 255,
+            controls.gfgfgf_radius->minimum() == 1 && controls.gfgfgf_radius->maximum() == 255 &&
+            controls.gfgfgf_subsample->minimum() == 1 && controls.gfgfgf_subsample->maximum() == 16,
             "New fusion method integer ranges are incorrect");
     require(controls.gfgfgf_selection->minimum() == 0 && controls.gfgfgf_selection->maximum() == 1 &&
             controls.gfgfgf_threshold->minimum() == 0 && controls.gfgfgf_threshold->maximum() == 1,

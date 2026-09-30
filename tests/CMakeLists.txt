@@ -2,14 +2,16 @@
 # 清晰度函数属于 DLL 私有实现，单独编译其源码供内部单元测试使用，不对 SDK 导出。
 # 同一源文件的焦点评估流程还依赖权重工具，因此一起编译，保持私有符号的链接完整。
 add_executable(mif_tests test_fusion.cpp test_focus_measure.cpp test_registration.cpp test_pipeline.cpp
-    test_traditional_fusion.cpp test_dtcwt.cpp test_guided_filter.cpp
+    test_traditional_fusion.cpp test_dtcwt.cpp test_guided_filter.cpp test_gfgfgf.cpp
     "${PROJECT_SOURCE_DIR}/algorithms/src/fusion/common/focus_measure.cpp"
     "${PROJECT_SOURCE_DIR}/algorithms/src/fusion/common/weight_map.cpp"
+    "${PROJECT_SOURCE_DIR}/algorithms/src/fusion/common/fast_guided_filter.cpp"
+    "${PROJECT_SOURCE_DIR}/algorithms/src/fusion/gfgfgf/focus_information.cpp"
     # DTCWT 引擎保持私有；仅测试目标单独编译，以检查六方向系数与正反变换。
     "${PROJECT_SOURCE_DIR}/algorithms/src/fusion/dtcwt/transform.cpp")
 target_include_directories(mif_tests PRIVATE "${PROJECT_SOURCE_DIR}/algorithms/src")
 target_link_libraries(mif_tests PRIVATE mif::core)
-foreach(case focus quality identity validation method_options weights cancellation alignment registration_homography registration_ecc registration_failure pipeline large_stack dct gfgfgf dtcwt_transform dtcwt_fusion dtcwt_options guided_filter_numerics)
+foreach(case focus quality identity validation method_options weights cancellation alignment registration_homography registration_ecc registration_failure pipeline large_stack dct gfgfgf gfgfgf_paper fast_guided_filter dtcwt_transform dtcwt_fusion dtcwt_options guided_filter_numerics)
     # 每个场景单独注册，CTest 可以精确指出哪个算法性质发生退化。
     add_test(NAME core.${case} COMMAND mif_tests ${case})
 endforeach()

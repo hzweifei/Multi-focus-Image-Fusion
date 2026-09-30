@@ -75,7 +75,8 @@ class FusionTests(unittest.TestCase):
         """新增嵌套配置以值复制赋值，借用成员保留父对象，错误参数正确转为 ValueError。"""
         cases = ((mif.FusionMethod.DCT, "dct", mif.DctOptions, "block_size", 8, 4, 1),
                  (mif.FusionMethod.DTCWT, "dtcwt", mif.DtcwtOptions, "levels", 4, 2, 0),
-                 (mif.FusionMethod.GFGFGF, "gfgfgf", mif.GfgfgfOptions, "guided_radius", 5, 3, 0))
+                 (mif.FusionMethod.GFGFGF, "gfgfgf", mif.GfgfgfOptions, "guided_radius", 5, 3, 0),
+                 (mif.FusionMethod.GFGFGF, "gfgfgf", mif.GfgfgfOptions, "guided_subsample", 4, 2, 0))
         image = np.arange(21 * 31, dtype=np.uint16).reshape(21, 31) * 53
         for method, field, option_type, attribute, default, changed, invalid in cases:
             with self.subTest(method=method):
@@ -97,6 +98,22 @@ class FusionTests(unittest.TestCase):
                 gc.collect()
                 setattr(member, attribute, changed)
                 self.assertEqual(getattr(member, attribute), changed)
+
+    def test_gfgfgf_subsample_options(self):
+        """快速滤波倍数完整传入核心；默认保留全部帧，合法端点可处理平坦输入。"""
+        options = mif.FusionOptions()
+        options.method = mif.FusionMethod.GFGFGF
+        self.assertEqual(options.gfgfgf.selection_ratio, 0)
+        self.assertEqual(options.gfgfgf.guided_subsample, 4)
+        images = [np.full((23, 35), value, np.uint16) for value in (10000, 50000)]
+        for factor in (1, 4, 16):
+            options.gfgfgf.guided_subsample = factor
+            self.assertEqual(options.gfgfgf.guided_subsample, factor)
+            np.testing.assert_allclose(mif.fuse(images, options), 30000, atol=1, rtol=0)
+        for factor in (0, 17):
+            options.gfgfgf.guided_subsample = factor
+            with self.assertRaises(ValueError):
+                mif.fuse(images, options)
 
     def test_all_method_diagnostics_and_pipeline(self):
         """五种方法都能经过独立入口与组合入口；DTCWT 明确返回空诊断。"""

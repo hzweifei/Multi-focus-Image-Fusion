@@ -33,6 +33,8 @@ add_library(mif_core ${_mif_library_type}
     src/fusion/common/weight_map.cpp
     src/fusion/common/guided_filter.hpp
     src/fusion/common/guided_filter.cpp
+    src/fusion/common/fast_guided_filter.hpp
+    src/fusion/common/fast_guided_filter.cpp
     src/fusion/guided_filter/guided_filter.hpp
     src/fusion/guided_filter/guided_filter.cpp
     src/fusion/laplacian_pyramid/laplacian_pyramid.hpp
@@ -45,6 +47,8 @@ add_library(mif_core ${_mif_library_type}
     src/fusion/dtcwt/transform.cpp
     src/fusion/gfgfgf/gfgfgf.hpp
     src/fusion/gfgfgf/gfgfgf.cpp
+    src/fusion/gfgfgf/focus_information.hpp
+    src/fusion/gfgfgf/focus_information.cpp
     # 配准入口及具体变换估计方法。
     src/registration/registration.hpp
     src/registration/registration.cpp

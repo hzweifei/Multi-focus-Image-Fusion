@@ -117,13 +117,17 @@ void bindOptions(nb::module_& module) {
         .def(nb::init<>())
         .def_rw("levels", &mif::DtcwtOptions::levels)
         .def_rw("activity_window", &mif::DtcwtOptions::activity_window);
-    nb::class_<mif::GfgfgfOptions>(module, "GfgfgfOptions", "梯度筛帧与两阶段引导滤波融合参数。")
+    nb::class_<mif::GfgfgfOptions>(module, "GfgfgfOptions", "类高斯四邻域聚焦度量、Sobel 平局处理与两次快速引导滤波参数。")
         .def(nb::init<>())
         .def_rw("difference_window", &mif::GfgfgfOptions::difference_window)
-        .def_rw("selection_ratio", &mif::GfgfgfOptions::selection_ratio)
-        .def_rw("difference_threshold", &mif::GfgfgfOptions::difference_threshold)
+        .def_rw("selection_ratio", &mif::GfgfgfOptions::selection_ratio,
+            "可选 Scharr 全局筛帧比例，范围 [0,1]；默认 0，保留全部输入。")
+        .def_rw("difference_threshold", &mif::GfgfgfOptions::difference_threshold,
+            "GFG 梯度阈值，范围 [0,1]；弱响应使用均值残差，默认 0.005。")
         .def_rw("guided_radius", &mif::GfgfgfOptions::guided_radius)
-        .def_rw("guided_epsilon", &mif::GfgfgfOptions::guided_epsilon);
+        .def_rw("guided_epsilon", &mif::GfgfgfOptions::guided_epsilon)
+        .def_rw("guided_subsample", &mif::GfgfgfOptions::guided_subsample,
+            "快速引导滤波下采样倍数，范围 [1,16]，默认 4；1 使用完整分辨率。");
     // 各种方法分别保存配置，只校验选中方法；旧扁平字段不提供转发别名。
     nb::class_<mif::FusionOptions>(module, "FusionOptions", "选择融合方法并分别保存各方法参数，不包含配准配置。")
         .def(nb::init<>())
