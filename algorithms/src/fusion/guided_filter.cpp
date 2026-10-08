@@ -1,4 +1,5 @@
-#include "fusion/guided_filter/guided_filter.hpp"
+#include "fusion/registry.hpp"
+#include <mif/fusion/guided_filter_fusion_options.hpp>
 #include "fusion/common/focus_measure.hpp"
 #include "fusion/common/guided_filter.hpp"
 #include "fusion/common/weight_map.hpp"
@@ -29,9 +30,8 @@ cv::Mat blendGuided(const std::vector<cv::Mat>& images,
     return result;
 }
 
-} // 匿名命名空间
-
-void validateGuidedFilterOptions(const GuidedFilterOptions& options) {
+/// 校验本方法的清晰度、两组半径及正则项；无效参数抛 invalid_argument。
+void validateGuidedFilterOptions(const GuidedFilterFusionOptions& options) {
     validateFocusOptions(options.focus);
     if (options.base_radius < 1 || options.base_radius > 255 ||
         options.detail_radius < 1 || options.detail_radius > 255)
@@ -40,8 +40,11 @@ void validateGuidedFilterOptions(const GuidedFilterOptions& options) {
     validateGuidedEpsilon(options.detail_epsilon);
 }
 
+/// 双尺度融合：自行评分、生成两组权重、重建图像并提供来源诊断。
+/// images 至少两张同尺寸 CV_32F 灰度或 BGR 图像，值域 [0, 1]；options 已校验。
+/// 不修改输入；进度回调同步执行，取消及调用者异常原样传播。
 MethodResult guidedFilterFusion(const std::vector<cv::Mat>& images,
-                                const GuidedFilterOptions& options, const ProgressCallback& progress) {
+                                const GuidedFilterFusionOptions& options, const ProgressCallback& progress) {
     auto maps = prepareFocusMaps(images, options.focus, progress);
     std::vector<cv::Mat> base_weights, detail_weights;
     for (size_t i = 0; i < images.size(); ++i) {
@@ -60,9 +63,16 @@ MethodResult guidedFilterFusion(const std::vector<cv::Mat>& images,
     MethodResult result;
     result.image = blendGuided(images, base_weights, detail_weights, options.base_radius, progress);
     // 来源图描述细节权重的主导输入，不把基础层和细节层简化成一张实际像素贡献图。
-    result.focus_indices = dominantIndices(detail_weights);
-    result.weights = std::move(detail_weights);
+    result.source_index_map = dominantIndices(detail_weights);
+    result.weight_maps = std::move(detail_weights);
     return result;
+}
+
+} // 匿名命名空间
+
+/// 在本文件绑定参数校验和执行；注册表只需显式引用这个函数。
+void registerGuidedFilterFusionMethod() {
+    registerFusionMethod(validateGuidedFilterOptions, guidedFilterFusion);
 }
 
 } // 命名空间 mif::detail::fusion

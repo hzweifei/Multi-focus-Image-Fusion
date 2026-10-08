@@ -9,11 +9,11 @@ enum class FocusMeasure {
 };
 
 /// 局部清晰度评分参数；各融合方法分别持有自己的实例，互不共享可变配置。
-struct FocusOptions {
+struct FocusMeasureOptions {
     /// 用于比较各输入图像清晰程度的指标。
     FocusMeasure measure = FocusMeasure::ModifiedLaplacian;
     /// 清晰度响应的平均窗口边长，单位为像素，必须为 [1, 255] 内的奇数。
-    int window = 9;
+    int window_size = 9;
 };
 
 } // 命名空间 mif

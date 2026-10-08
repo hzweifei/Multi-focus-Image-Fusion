@@ -1,4 +1,5 @@
-#include "registration/registration.hpp"
+#include "registration/registry.hpp"
+#include <mif/registration/sift_registration_options.hpp>
 
 #include <opencv2/calib3d.hpp>
 #include <opencv2/features2d.hpp>
@@ -18,6 +19,16 @@ namespace {
 // 单应矩阵有八个自由度。至少六个不同位置的对应点，给四点最小解留出冗余，
 // 避免少数偶然匹配恰好产生一个形式上有效、实际无法可靠外推的变换。
 constexpr size_t minimum_matches = 6;
+
+/// SIFT 固定使用单应性，只检查它实际接收的特征匹配参数。
+void validateSiftOptions(const SiftRegistrationOptions& options) {
+    if (options.max_features < 64 || options.max_features > 100000 ||
+        !std::isfinite(options.match_ratio_threshold) || options.match_ratio_threshold <= 0 ||
+        options.match_ratio_threshold >= 1 || !std::isfinite(options.ransac_reprojection_threshold) ||
+        options.ransac_reprojection_threshold <= 0 || !std::isfinite(options.min_inlier_ratio) ||
+        options.min_inlier_ratio <= 0 || options.min_inlier_ratio > 1)
+        throw std::invalid_argument("Invalid SIFT options; check feature count and matching thresholds");
+}
 
 /// 检查内点是否能在二维平面中约束单应变换，拒绝集中在一点或近似直线上的点集。
 /// 判定使用工作分辨率坐标；绝对阈值避免亚像素小区域，相对阈值避免过度集中。
@@ -63,14 +74,16 @@ void requireSpatialSpread(const std::vector<cv::Point2f>& points, const cv::Size
 /// 每个配准任务独立创建实例；可变 SIFT 状态不会在并行任务之间共享。
 class HomographyEstimator final : public Estimator {
 public:
-    HomographyEstimator(const cv::Mat& reference_gray, const RegistrationOptions& options)
+    HomographyEstimator(const cv::Mat& reference_gray, const SiftRegistrationOptions& options)
         : sift_(cv::SIFT::create(options.max_features)),
           reference_size_(reference_gray.size()),
-          match_ratio_(options.match_ratio),
-          ransac_threshold_(options.ransac_threshold),
+          match_ratio_(options.match_ratio_threshold),
+          ransac_threshold_(options.ransac_reprojection_threshold),
           minimum_inlier_ratio_(options.min_inlier_ratio) {
         extractFeatures(reference_gray, reference_keypoints_, reference_descriptors_, "reference");
     }
+
+    bool isProjective() const noexcept override { return true; }
 
     /// 输入与参考图同尺寸的归一化浮点灰度图，返回参考坐标到源图坐标的 3×3 矩阵。
     cv::Mat estimate(const cv::Mat& source_gray) override {
@@ -175,9 +188,12 @@ private:
 
 } // 匿名命名空间
 
-std::unique_ptr<Estimator> makeHomographyEstimator(const cv::Mat& reference_gray,
-                                                  const RegistrationOptions& options) {
-    return std::make_unique<HomographyEstimator>(reference_gray, options);
+/// 内置清单显式调用，避免只靠静态初始化而被静态库链接过程丢弃。
+void registerSiftRegistrationMethod() {
+    registerRegistrationMethod<SiftRegistrationOptions>(validateSiftOptions,
+        [](const cv::Mat& reference, const SiftRegistrationOptions& options) -> std::unique_ptr<Estimator> {
+            return std::make_unique<HomographyEstimator>(reference, options);
+        });
 }
 
 } // 命名空间 mif::detail::registration

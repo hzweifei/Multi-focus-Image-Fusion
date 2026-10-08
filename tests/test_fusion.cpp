@@ -1,11 +1,14 @@
 #include "fixtures.hpp"
-#include <mif/fusion.hpp>
+#include <mif/mif.hpp>
 #include <algorithm>
 #include <cmath>
 #include <functional>
 #include <iostream>
 #include <limits>
 #include <map>
+#include <type_traits>
+#include <future>
+#include "fusion/registry.hpp"
 
 // 核心算法回归测试入口；CTest 通过用例名分别运行，失败原因可独立定位。
 void testFocusMeasure();
@@ -14,6 +17,7 @@ void testPipeline();
 void testRegistrationHomography();
 void testRegistrationEcc();
 void testRegistrationFailure();
+void testRegistrationRegistry();
 void testDctFusion();
 void testGfgfgfFusion();
 void testDtcwtTransform();
@@ -23,7 +27,11 @@ void testGuidedFilterNumerics();
 void testGfgfgfPaper();
 void testFastGuidedFilter();
 namespace {
-const std::vector<mif::FusionMethod> methods{mif::FusionMethod::GuidedFilter, mif::FusionMethod::LaplacianPyramid};
+template<class Action>
+void forEachFocusOptions(Action action) {
+    action(mif::GuidedFilterFusionOptions{});
+    action(mif::LaplacianPyramidFusionOptions{});
+}
 
 // 互补清晰区域应被恢复：融合误差明显低于任一源图，并保持尺寸和顺序对称性。
 void quality() {
@@ -31,22 +39,20 @@ void quality() {
         auto sharp = texture();
         if (channels == 3) cv::cvtColor(sharp, sharp, cv::COLOR_GRAY2BGR);
         const auto stack = focusStack(sharp);
-        for (auto method : methods) {
+        forEachFocusOptions([&](auto o) {
             for (auto measure : {mif::FocusMeasure::ModifiedLaplacian, mif::FocusMeasure::Tenengrad}) {
-                mif::FusionOptions o; o.method = method;
-                o.guided_filter.focus.measure = measure;
-                o.laplacian_pyramid.focus.measure = measure;
+                o.focus.measure = measure;
                 const auto output = mif::fuse(stack, o);
                 const double baseline = std::min(mae(stack[0], sharp), mae(stack[1], sharp));
                 const double error = mae(output.image, sharp);
                 std::cout << "MAE fused=" << error << " source=" << baseline << '\n';
                 require(error < baseline * 0.65, "Fusion should recover complementary sharp regions");
                 require(output.image.size() == sharp.size(), "Odd image dimensions changed");
-                require(output.weights.empty(), "Weights retained without request");
+                require(output.weight_maps.empty(), "Weights retained without request");
                 auto reversed = stack; std::reverse(reversed.begin(), reversed.end());
                 require(mae(output.image, mif::fuse(reversed, o).image) < 0.01, "Fusion changed when source order changed");
             }
-        }
+        });
     }
 }
 
@@ -64,15 +70,15 @@ void identity() {
             texture(37, 51).convertTo(image, depth, depth == CV_16U ? 257 : depth == CV_32F ? 1.0 / 255 : 1);
             if (channels == 3) cv::cvtColor(image, image, cv::COLOR_GRAY2BGR);
             const cv::Mat before = image.clone();
-            for (auto method : methods) {
-                mif::FusionOptions o; o.method = method; o.laplacian_pyramid.levels = 16;
+            forEachFocusOptions([&](auto o) {
+                if constexpr (std::is_same_v<decltype(o), mif::LaplacianPyramidFusionOptions>) o.max_levels = 16;
                 const auto result = mif::fuse({image, image, image}, o);
                 require(result.image.type() == image.type(), "Depth/channels were not preserved");
                 require(cv::norm(result.image, image, cv::NORM_INF) <= (depth == CV_32F ? 2e-6 : 1), "Identical inputs changed");
                 require(cv::norm(image, before, cv::NORM_INF) == 0, "Input was modified");
                 cv::Mat tiny(2, 3, image.type(), cv::Scalar::all(depth == CV_32F ? 0.4 : 100));
                 require(mae(mif::fuse({tiny, tiny}, o).image, tiny) < 0.01, "Tiny image failed");
-            }
+            });
         }
     }
 }
@@ -94,153 +100,93 @@ void validation() {
     rejects([&] { cv::Mat bad(32, 32, CV_32F, cv::Scalar(1.1)); mif::fuse({bad, bad}); });
     rejects([&] { cv::Mat bad(32, 32, CV_32F, cv::Scalar(std::nextafter(1.0f, 2.0f))); mif::fuse({bad, bad}); });
     rejects([&] { cv::Mat bad(32, 32, CV_32F, cv::Scalar(-0.1)); mif::fuse({bad, bad}); });
-    rejects([&] { mif::FusionOptions o; o.guided_filter.focus.window = 8; mif::fuse({image, image}, o); });
-    rejects([&] { mif::FusionOptions o; o.guided_filter.detail_epsilon = 0; mif::fuse({image, image}, o); });
-    rejects([&] { mif::FusionOptions o; o.method = mif::FusionMethod::LaplacianPyramid;
-                  o.laplacian_pyramid.levels = 0; mif::fuse({image, image}, o); });
-    rejects([&] { mif::FusionOptions o; o.method = static_cast<mif::FusionMethod>(99); mif::fuse({image, image}, o); });
-    // 各方法分别维护自己的约束，逐项检查可发现拆分时漏掉某个字段的校验。
-    for (const auto method : methods) {
-        auto reject_option = [&](const std::function<void(mif::FusionOptions&)>& change) {
-            mif::FusionOptions options;
-            options.method = method;
+    forEachFocusOptions([&](auto defaults) {
+        auto reject_option = [&](auto change) {
+            auto options = defaults;
             change(options);
-            rejects([&] { mif::fuse({image, image}, options); });
+            bool reported = false;
+            rejects([&] { mif::fuse({image, image}, options, [&](int, const std::string&) {
+                reported = true; return true;
+            }); });
+            require(!reported, "Invalid options reached image processing");
         };
-        auto focus = [method](mif::FusionOptions& options) -> mif::FocusOptions& {
-            return method == mif::FusionMethod::GuidedFilter ?
-                   options.guided_filter.focus : options.laplacian_pyramid.focus;
-        };
-        reject_option([&](auto& options) { focus(options).measure = static_cast<mif::FocusMeasure>(99); });
-        for (int value : {0, 2, 256})
-            reject_option([&](auto& options) { focus(options).window = value; });
+        reject_option([](auto& o) { o.focus.measure = static_cast<mif::FocusMeasure>(99); });
+        for (int value : {0, 2, 256}) reject_option([&](auto& o) { o.focus.window_size = value; });
         for (int value : {0, 256}) {
-            reject_option([&](auto& options) {
-                if (method == mif::FusionMethod::GuidedFilter) options.guided_filter.detail_radius = value;
-                else options.laplacian_pyramid.detail_radius = value;
-            });
-            if (method == mif::FusionMethod::GuidedFilter)
-                reject_option([&](auto& options) { options.guided_filter.base_radius = value; });
+            reject_option([&](auto& o) { o.detail_radius = value; });
+            if constexpr (std::is_same_v<decltype(defaults), mif::GuidedFilterFusionOptions>)
+                reject_option([&](auto& o) { o.base_radius = value; });
         }
         for (double value : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
                               std::numeric_limits<double>::infinity()}) {
-            reject_option([&](auto& options) {
-                if (method == mif::FusionMethod::GuidedFilter) options.guided_filter.detail_epsilon = value;
-                else options.laplacian_pyramid.detail_epsilon = value;
-            });
-            if (method == mif::FusionMethod::GuidedFilter)
-                reject_option([&](auto& options) { options.guided_filter.base_epsilon = value; });
+            reject_option([&](auto& o) { o.detail_epsilon = value; });
+            if constexpr (std::is_same_v<decltype(defaults), mif::GuidedFilterFusionOptions>)
+                reject_option([&](auto& o) { o.base_epsilon = value; });
         }
-        if (method == mif::FusionMethod::LaplacianPyramid)
-            for (int value : {0, 17})
-                reject_option([&](auto& options) { options.laplacian_pyramid.levels = value; });
-    }
+        if constexpr (std::is_same_v<decltype(defaults), mif::LaplacianPyramidFusionOptions>)
+            for (int value : {0, 17}) reject_option([&](auto& o) { o.max_levels = value; });
+    });
 }
 
-// 两种方法拥有各自的参数和值语义；未选中的参数既不参与计算，也不参与校验。
+// 参数类型直接选择算法；复制与多态快照必须保留配置，且互不共享可变字段。
 void methodOptions() {
-    const mif::FusionOptions defaults;
-    require(defaults.method == mif::FusionMethod::GuidedFilter && !defaults.keep_weight_maps,
-            "Fusion entry defaults changed");
-    for (const auto& focus : {defaults.guided_filter.focus, defaults.laplacian_pyramid.focus})
-        require(focus.measure == mif::FocusMeasure::ModifiedLaplacian && focus.window == 9,
-                "A method's focus defaults changed");
-    require(defaults.guided_filter.base_radius == 15 && defaults.guided_filter.detail_radius == 3 &&
-            defaults.guided_filter.base_epsilon == 0.01 && defaults.guided_filter.detail_epsilon == 0.0001,
-            "Guided-filter defaults changed");
-    require(defaults.laplacian_pyramid.detail_radius == 3 &&
-            defaults.laplacian_pyramid.detail_epsilon == 0.0001 && defaults.laplacian_pyramid.levels == 5,
-            "Laplacian-pyramid defaults changed");
-    auto independent = defaults;
-    independent.guided_filter.focus.window = 3;
-    independent.laplacian_pyramid.focus.measure = mif::FocusMeasure::Tenengrad;
-    require(defaults.guided_filter.focus.window == 9 && independent.laplacian_pyramid.focus.window == 9 &&
-            defaults.laplacian_pyramid.focus.measure == mif::FocusMeasure::ModifiedLaplacian &&
-            independent.guided_filter.focus.measure == mif::FocusMeasure::ModifiedLaplacian,
-            "Method configurations share mutable focus settings");
-
-    auto equal = [](const mif::FusionResult& a, const mif::FusionResult& b) {
-        require(a.image.type() == b.image.type() && a.image.size() == b.image.size() &&
-                cv::norm(a.image, b.image, cv::NORM_INF) == 0, "Inactive settings changed fused pixels");
-        require(cv::norm(a.focus_indices, b.focus_indices, cv::NORM_INF) == 0,
-                "Inactive settings changed source indices");
-        require(a.weights.size() == b.weights.size(), "Inactive settings changed diagnostic count");
-        for (size_t i = 0; i < a.weights.size(); ++i)
-            require(cv::norm(a.weights[i], b.weights[i], cv::NORM_INF) == 0,
-                    "Inactive settings changed diagnostic weights");
-    };
+    const mif::GuidedFilterFusionOptions guided_defaults;
+    const mif::LaplacianPyramidFusionOptions pyramid_defaults;
+    require(!guided_defaults.include_weight_maps && guided_defaults.base_radius == 15 &&
+            guided_defaults.base_epsilon == 0.01 && guided_defaults.detail_radius == 3 &&
+            guided_defaults.detail_epsilon == 0.0001, "Guided defaults changed");
+    require(pyramid_defaults.max_levels == 5 && pyramid_defaults.detail_radius == 3 &&
+            pyramid_defaults.detail_epsilon == 0.0001, "Pyramid defaults changed");
     const auto sharp = texture();
     const auto images = focusStack(sharp);
-    const double source_error = std::min(mae(images[0], sharp), mae(images[1], sharp));
-    const double nan = std::numeric_limits<double>::quiet_NaN();
-    for (const auto method : methods) {
-        mif::FusionOptions options;
-        options.method = method;
-        options.keep_weight_maps = true;
+    require(cv::norm(mif::fuse(images).image, mif::fuse(images, guided_defaults).image, cv::NORM_INF) == 0,
+            "Default entry did not select guided filter");
+    forEachFocusOptions([&](auto options) {
+        using Options = decltype(options);
+        require(options.focus.window_size == 9 && options.focus.measure == mif::FocusMeasure::ModifiedLaplacian,
+                "Focus defaults changed");
         const auto original = mif::fuse(images, options);
-        // 两组配置故意使用不同清晰度、窗口和权重参数，验证入口读取对应的完整参数组。
-        options.guided_filter.focus = {mif::FocusMeasure::Tenengrad, 5};
-        options.guided_filter.base_radius = 7;
-        options.guided_filter.detail_radius = 2;
-        options.guided_filter.base_epsilon = 0.02;
-        options.guided_filter.detail_epsilon = 0.002;
-        options.laplacian_pyramid.focus = {mif::FocusMeasure::ModifiedLaplacian, 7};
-        options.laplacian_pyramid.detail_radius = 4;
-        options.laplacian_pyramid.detail_epsilon = 0.003;
-        options.laplacian_pyramid.levels = 3;
-        const auto configured = mif::fuse(images, options);
-        require(cv::norm(configured.image, original.image, cv::NORM_INF) > 0,
-                "Non-default method settings were ignored");
-        require(mae(configured.image, sharp) < source_error,
-                "Non-default method failed to recover complementary focus");
-        require(configured.focus_indices.type() == CV_32SC1 && configured.weights.size() == images.size(),
-                "Method did not produce its source diagnostics");
-        const auto saved = options;
-        if (method == mif::FusionMethod::GuidedFilter) {
-            options.laplacian_pyramid.focus = {static_cast<mif::FocusMeasure>(99), 0};
-            options.laplacian_pyramid.detail_radius = -1;
-            options.laplacian_pyramid.detail_epsilon = nan;
-            options.laplacian_pyramid.levels = 0;
+        options.include_weight_maps = true;
+        options.focus = {mif::FocusMeasure::Tenengrad, 5};
+        options.detail_radius = 2;
+        options.detail_epsilon = 0.002;
+        if constexpr (std::is_same_v<Options, mif::GuidedFilterFusionOptions>) {
+            options.base_radius = 7;
+            options.base_epsilon = 0.02;
         } else {
-            options.guided_filter.focus = {static_cast<mif::FocusMeasure>(99), 0};
-            options.guided_filter.base_radius = 0;
-            options.guided_filter.detail_radius = -1;
-            options.guided_filter.base_epsilon = nan;
-            options.guided_filter.detail_epsilon = 0;
+            options.max_levels = 3;
         }
-        equal(configured, mif::fuse(images, options));
-        // 同一无效参数组被选中后必须立即拒绝，不能先归一化输入或触发进度回调。
-        options.method = method == mif::FusionMethod::GuidedFilter ?
-                         mif::FusionMethod::LaplacianPyramid : mif::FusionMethod::GuidedFilter;
-        bool rejected = false, reported = false;
-        try {
-            mif::fuse(images, options, [&](int, const std::string&) { reported = true; return true; });
-        } catch (const std::invalid_argument&) {
-            rejected = true;
-        }
-        require(rejected && !reported, "Selected invalid method settings were not rejected before processing");
-        // 切换并执行其他方法后，原配置的计算结果应保持一致。
-        options = saved;
-        options.method = method == mif::FusionMethod::GuidedFilter ?
-                         mif::FusionMethod::LaplacianPyramid : mif::FusionMethod::GuidedFilter;
-        mif::fuse(images, options);
-        options.method = method;
-        equal(configured, mif::fuse(images, options));
-    }
+        const auto configured = mif::fuse(images, options);
+        require(cv::norm(configured.image, original.image, cv::NORM_INF) > 0, "Method options ignored");
+        require(mae(configured.image, sharp) < std::min(mae(images[0], sharp), mae(images[1], sharp)),
+                "Configured method lost complementary focus");
+        require(configured.source_index_map.type() == CV_32SC1 && configured.weight_maps.size() == images.size(),
+                "Source diagnostics missing");
+        auto snapshot = options.clone();
+        require(dynamic_cast<Options*>(snapshot.get()) != nullptr, "Parameter snapshot sliced its dynamic type");
+        options.focus.window_size = 0;
+        const auto copied = mif::fuse(images, *snapshot);
+        require(cv::norm(configured.image, copied.image, cv::NORM_INF) == 0 &&
+                cv::norm(configured.source_index_map, copied.source_index_map, cv::NORM_INF) == 0,
+                "Snapshot changed after editing source configuration");
+        for (size_t i = 0; i < copied.weight_maps.size(); ++i)
+            require(cv::norm(configured.weight_maps[i], copied.weight_maps[i], cv::NORM_INF) == 0,
+                    "Snapshot lost diagnostic settings");
+    });
 }
 
-// 常量图像没有清晰度差异，应等权平均；保留的权重须非负且逐像素和为 1。
+// 常量输入等权平均，公开诊断权重逐像素归一化。
 void weights() {
     cv::Mat a(39, 57, CV_16U, cv::Scalar(10000)), b(39, 57, CV_16U, cv::Scalar(50000));
-    for (auto method : methods) {
-        mif::FusionOptions o; o.keep_weight_maps = true; o.method = method;
+    forEachFocusOptions([&](auto o) {
+        o.include_weight_maps = true;
         const auto result = mif::fuse({a, b}, o);
-        require(result.weights.size() == 2, "Missing weight maps");
-        require(cv::norm(result.weights[0] + result.weights[1], cv::Mat(a.size(), CV_32F, cv::Scalar(1)), cv::NORM_INF) < 1e-5,
+        require(result.weight_maps.size() == 2, "Missing weight maps");
+        require(cv::norm(result.weight_maps[0] + result.weight_maps[1], cv::Mat(a.size(), CV_32F, cv::Scalar(1)), cv::NORM_INF) < 1e-5,
                 "Weights do not sum to one");
-        require(cv::checkRange(result.weights[0], true, nullptr, 0, 1.0001), "Invalid weight range");
+        require(cv::checkRange(result.weight_maps[0], true, nullptr, 0, 1.0001), "Invalid weight range");
         require(mae(result.image, cv::Mat(a.size(), CV_16U, cv::Scalar(30000))) <= 1, "Flat image ties should average");
-    }
+    });
 }
 
 // 通过公开接口验证两种方法的阶段回调：各处理阶段可取消，异常保持类型和消息，
@@ -251,10 +197,8 @@ void cancellation() {
     struct CallbackFailure : std::runtime_error {
         using std::runtime_error::runtime_error;
     };
-    for (const auto method : methods) {
-        mif::FusionOptions options;
-        options.method = method;
-        const std::string blending_stage = method == mif::FusionMethod::GuidedFilter ? "blend" : "pyramid";
+    forEachFocusOptions([&](auto options) {
+        const std::string blending_stage = std::is_same_v<decltype(options), mif::GuidedFilterFusionOptions> ? "blend" : "pyramid";
         const std::vector<std::string> cancellable_stages{"focus", "weights", blending_stage, "finish"};
         for (const auto& target_stage : cancellable_stages) {
             int last = -1;
@@ -301,26 +245,85 @@ void cancellation() {
         for (const auto& stage : cancellable_stages)
             require(std::find(observed_stages.begin(), observed_stages.end(), stage) != observed_stages.end(),
                     "Missing processing stage: " + stage);
-        const std::string other_stage = method == mif::FusionMethod::GuidedFilter ? "pyramid" : "blend";
+        const std::string other_stage = std::is_same_v<decltype(options), mif::GuidedFilterFusionOptions> ? "pyramid" : "blend";
         require(std::find(observed_stages.begin(), observed_stages.end(), other_stage) == observed_stages.end(),
                 "Fusion ran the wrong method's processing stage");
-    }
+    });
 }
 
 // 第 257 张图拥有唯一纹理，获胜索引应为 256，确保索引没有被截断到 8 位。
 void largeStack() {
     std::vector<cv::Mat> images(257, cv::Mat::zeros(13, 15, CV_8U));
     images.back() = texture(13, 15);
-    mif::FusionOptions o; o.guided_filter.focus.window = 3; o.guided_filter.detail_radius = 1;
+    mif::GuidedFilterFusionOptions o; o.focus.window_size = 3; o.detail_radius = 1;
     const auto result = mif::fuse(images, o);
     double maximum;
-    cv::minMaxLoc(result.focus_indices, nullptr, &maximum);
-    require(result.focus_indices.type() == CV_32S && maximum == 256, "Source indices truncated to uint8");
+    cv::minMaxLoc(result.source_index_map, nullptr, &maximum);
+    require(result.source_index_map.type() == CV_32S && maximum == 256, "Source indices truncated to uint8");
 }
+// 独立进程中同时首次调用两条入口，验证内置注册只执行一次且不持锁运行算法。
+void registryConcurrency() {
+    std::promise<void> ready;
+    const auto start = ready.get_future().share();
+    std::vector<std::future<void>> tasks;
+    for (int i = 0; i < 8; ++i) {
+        tasks.push_back(std::async(std::launch::async, [start] {
+            start.wait();
+            const cv::Mat image(8, 9, CV_16U, cv::Scalar(12345));
+            const auto registered = mif::registerImages({image, image});
+            const auto fused = mif::fuse(registered.images);
+            require(cv::norm(fused.image, image, cv::NORM_INF) <= 1,
+                    "Concurrent first invocation lost method registration or data");
+        }));
+    }
+    ready.set_value();
+    for (auto& task : tasks) task.get();
+}
+
+struct TestFusionOptions final : mif::FusionOptionsBase {
+    float gain = 1;
+    std::unique_ptr<mif::FusionOptionsBase> clone() const override {
+        return std::make_unique<TestFusionOptions>(*this);
+    }
+};
+void validateTestOptions(const TestFusionOptions& options) {
+    if (options.gain <= 0) throw std::invalid_argument("Test gain must be positive");
+}
+mif::detail::fusion::MethodResult runTestMethod(const std::vector<cv::Mat>& images,
+    const TestFusionOptions& options, const mif::ProgressCallback&) {
+    mif::detail::fusion::MethodResult result;
+    result.image = images.front() * options.gain;
+    return result;
+}
+void registry() {
+    const cv::Mat image(8, 9, CV_16UC3, cv::Scalar(10000, 20000, 40000));
+    TestFusionOptions options;
+    bool rejected = false;
+    try { mif::fuse({image, image}, options); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    require(rejected, "Unknown fusion configuration accepted");
+    mif::detail::fusion::registerFusionMethod(validateTestOptions, runTestMethod);
+    options.gain = 2;
+    const auto result = mif::fuse({image, image}, options);
+    require(result.image.type() == image.type() && result.image.at<cv::Vec<unsigned short, 3>>(0, 0)[2] == 65535 &&
+            result.image.at<cv::Vec<unsigned short, 3>>(0, 0)[0] == 20000,
+            "Registered method bypassed normalization, clamping or depth restoration");
+    rejected = false;
+    try { mif::detail::fusion::registerFusionMethod(validateTestOptions, runTestMethod); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    require(rejected, "Duplicate fusion registration accepted");
+    options.gain = 0;
+    rejected = false;
+    bool reported = false;
+    try { mif::fuse({image, image}, options, [&](int, const std::string&) { reported = true; return true; }); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    require(rejected && !reported, "Custom validation did not run before processing");
+}
+
 }
 int main(int argc, char** argv) {
     const std::map<std::string, std::function<void()>> tests{
-        {"focus", testFocusMeasure}, {"quality", quality}, {"identity", identity},
+        {"registry", registry}, {"registry_concurrency", registryConcurrency}, {"registration_registry", testRegistrationRegistry}, {"focus", testFocusMeasure}, {"quality", quality}, {"identity", identity},
         {"validation", validation}, {"method_options", methodOptions},
         {"weights", weights}, {"cancellation", cancellation},
         {"pipeline", testPipeline}, {"alignment", testRegistrationAlignment}, {"registration_homography", testRegistrationHomography},

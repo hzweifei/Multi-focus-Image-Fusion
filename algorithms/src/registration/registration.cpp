@@ -1,4 +1,4 @@
-#include "registration/registration.hpp"
+#include "registration/registry.hpp"
 #include <mif/registration.hpp>
 #include "common/grayscale.hpp"
 #include "common/image_stack.hpp"
@@ -13,23 +13,10 @@
 namespace mif::detail::registration {
 namespace {
 
-/// 配准参数独立校验；即使选择 None，也不接受非法枚举或暂未使用的无效参数。
-void validateOptions(const RegistrationOptions& options) {
-    if (options.method != RegistrationMethod::None && options.method != RegistrationMethod::Ecc &&
-        options.method != RegistrationMethod::Sift)
-        throw std::invalid_argument("Unknown registration method");
-    // SIFT 和 None 不使用此模型，但仍拒绝无效配置，避免切换方法后才暴露非法枚举。
-    if (options.motion_model != MotionModel::Translation && options.motion_model != MotionModel::Affine &&
-        options.motion_model != MotionModel::Homography)
-        throw std::invalid_argument("Unknown registration motion model");
-    if (options.iterations < 1 || options.iterations > 10000 ||
-        !std::isfinite(options.epsilon) || options.epsilon <= 0 ||
-        options.max_size < 16 || options.max_size > 8192 ||
-        options.max_features < 64 || options.max_features > 100000 ||
-        !std::isfinite(options.match_ratio) || options.match_ratio <= 0 || options.match_ratio >= 1 ||
-        !std::isfinite(options.ransac_threshold) || options.ransac_threshold <= 0 ||
-        !std::isfinite(options.min_inlier_ratio) || options.min_inlier_ratio <= 0 || options.min_inlier_ratio > 1)
-        throw std::invalid_argument("Invalid registration options; check iterations, epsilon, size and matching thresholds");
+/// 公共入口只校验所有方法共有的工作尺寸；方法专属校验器由注册表提供。
+void validateCommonOptions(const RegistrationOptionsBase& options) {
+    if (options.max_working_dimension < 16 || options.max_working_dimension > 8192)
+        throw std::invalid_argument("Registration working dimension must be within [16, 8192]");
 }
 
 /// 在 CV_8UC1 有效区域掩码中寻找完全由非零像素构成的最大轴对齐矩形。
@@ -91,31 +78,15 @@ cv::Mat checkedTransform(const cv::Mat& transform, const cv::Size& size) {
     return normalized;
 }
 
-/// 新方法只需提供估计器工厂并在这里增加分派；公共重采样和裁剪无需重复实现。
-std::unique_ptr<Estimator> makeEstimator(const cv::Mat& reference, const RegistrationOptions& options) {
-    switch (options.method) {
-    case RegistrationMethod::Sift:
-        return makeHomographyEstimator(reference, options);
-    case RegistrationMethod::Ecc:
-        return makeEccEstimator(reference, options);
-    default:
-        throw std::invalid_argument("Unknown registration estimator");
-    }
-}
 /// 对独立的 [0, 1] 浮点工作图进行配准与共同区域裁剪，元数据写入配准结果。
-/// 此处不恢复位深；输入、非 None 的配准方法及其参数均已由公开入口校验。
-void alignNormalized(std::vector<cv::Mat>& images, const RegistrationOptions& options,
+/// 此处不恢复位深；输入及实际参数类型均已由公开入口和方法校验器检查。
+void alignNormalized(std::vector<cv::Mat>& images, const RegistrationOptionsBase& options,
+                     const RegistrationMethodEntry& method,
                      RegistrationResult& result, const ProgressCallback& progress) {
     const cv::Size size = images.front().size();
-    result.crop = {0, 0, size.width, size.height};
-    const bool perspective = options.method == RegistrationMethod::Sift ||
-                             (options.method == RegistrationMethod::Ecc &&
-                              options.motion_model == MotionModel::Homography);
-    // SIFT 固定使用单应性；ECC 的输出维度由运动模型决定，参考图始终为单位变换。
-    for (size_t i = 0; i < images.size(); ++i)
-        result.transforms.push_back(cv::Mat::eye(perspective ? 3 : 2, 3, CV_32F));
+    result.crop_region = {0, 0, size.width, size.height};
     // 缩小图像仅用于估计变换，随后将矩阵换回原始坐标，在原分辨率上重采样。
-    const double scale = std::min(1.0, static_cast<double>(options.max_size) /
+    const double scale = std::min(1.0, static_cast<double>(options.max_working_dimension) /
                                          std::max(size.width, size.height));
     const cv::Size small(std::max(1, cvRound(size.width * scale)),
                          std::max(1, cvRound(size.height * scale)));
@@ -132,10 +103,15 @@ void alignNormalized(std::vector<cv::Mat>& images, const RegistrationOptions& op
     std::unique_ptr<Estimator> estimator;
     try {
         // 方法自身负责特有预处理与缓存；公共层只统一灰度、尺寸和坐标系。
-        estimator = makeEstimator(prepare(images.front()), options);
+        estimator = method.create(prepare(images.front()), options);
+        if (!estimator) throw std::runtime_error("Registration factory returned no estimator");
     } catch (const std::exception& error) {
         throw std::runtime_error("Registration failed for reference image 1: " + std::string(error.what()));
     }
+    // 具体估计器报告本次任务的模型；公共流程不判断方法名称或参数派生类型。
+    const bool perspective = estimator->isProjective();
+    for (size_t i = 0; i < images.size(); ++i)
+        result.transforms.push_back(cv::Mat::eye(perspective ? 3 : 2, 3, CV_32F));
     cv::Mat common(size, CV_8U, cv::Scalar(255));
     const cv::Mat valid(size, CV_32F, cv::Scalar(1));
     for (size_t i = 1; i < images.size(); ++i) {
@@ -144,6 +120,10 @@ void alignNormalized(std::vector<cv::Mat>& images, const RegistrationOptions& op
             // 统一方向为参考 -> 源；矩阵使用双精度完成坐标换算，避免缩放放大舍入误差。
             const cv::Mat working_transform = estimator->estimate(prepare(images[i]));
             const cv::Mat transform = checkedTransform(to_original * working_transform * to_small, size);
+            // 仿射采样会丢掉最后一行，不能把扩展方法误报的透视项静默截断。
+            if (!perspective && (std::abs(transform.at<double>(2, 0)) > 1e-12 ||
+                                 std::abs(transform.at<double>(2, 1)) > 1e-12))
+                throw std::runtime_error("Affine registration estimator returned a projective transform");
             cv::Mat warp;
             if (perspective) transform.convertTo(warp, CV_32F);
             else transform.rowRange(0, 2).convertTo(warp, CV_32F);
@@ -173,11 +153,11 @@ void alignNormalized(std::vector<cv::Mat>& images, const RegistrationOptions& op
     // 进度回调位于求解异常包装之外，确保 Cancelled 或调用者异常保持原类型。
     report(progress, 90, "align");
     // 直接取掩码外接矩形可能包含无效角落；最大内接矩形保证输出每个像素都有效。
-    result.crop = largestRectangle(common);
-    if (std::min(result.crop.width, result.crop.height) < 8)
+    result.crop_region = largestRectangle(common);
+    if (std::min(result.crop_region.width, result.crop_region.height) < 8)
         throw std::runtime_error("Insufficient common image area after alignment");
     // clone 让裁剪图持有独立、连续的数据，也释放对整幅配准缓冲区的引用。
-    for (auto& image : images) image = image(result.crop).clone();
+    for (auto& image : images) image = image(result.crop_region).clone();
 }
 
 } // 匿名命名空间
@@ -185,14 +165,16 @@ void alignNormalized(std::vector<cv::Mat>& images, const RegistrationOptions& op
 
 namespace mif {
 
-RegistrationResult registerImages(const std::vector<cv::Mat>& inputs, const RegistrationOptions& options,
+RegistrationResult registerImages(const std::vector<cv::Mat>& inputs, const RegistrationOptionsBase& options,
                                   const ProgressCallback& progress) {
     detail::validateImages(inputs);
-    detail::registration::validateOptions(options);
+    detail::registration::validateCommonOptions(options);
+    const auto method = detail::registration::findRegistrationMethod(options);
+    method.validate(options);
     RegistrationResult result;
-    if (options.method == RegistrationMethod::None) {
+    if (method.copy_only) {
         // 跳过估计与重采样，但仍返回独立数据，调用者可以安全修改结果而不影响输入。
-        result.crop = {0, 0, inputs.front().cols, inputs.front().rows};
+        result.crop_region = {0, 0, inputs.front().cols, inputs.front().rows};
         for (size_t i = 0; i < inputs.size(); ++i) {
             detail::report(progress, static_cast<int>(10 * i / inputs.size()), "prepare");
             result.images.push_back(inputs[i].clone());
@@ -202,7 +184,7 @@ RegistrationResult registerImages(const std::vector<cv::Mat>& inputs, const Regi
         // 工作图采用统一浮点范围，ECC 与特征提取的参数不随输入位深变化。
         // 公共归一化函数会分配独立缓冲区，并报告 prepare 阶段的进度。
         auto images = detail::normalizeImages(inputs, progress);
-        detail::registration::alignNormalized(images, options, result, progress);
+        detail::registration::alignNormalized(images, options, method, result, progress);
         detail::report(progress, 95, "finish");
         const double range = detail::imageRange(inputs.front().depth());
         for (const auto& image : images) {
@@ -212,7 +194,7 @@ RegistrationResult registerImages(const std::vector<cv::Mat>& inputs, const Regi
             result.images.push_back(std::move(restored));
         }
     }
-    if (options.method == RegistrationMethod::None) detail::report(progress, 95, "finish");
+    if (method.copy_only) detail::report(progress, 95, "finish");
     detail::report(progress, 100, "done");
     return result;
 }

@@ -145,12 +145,53 @@ outputs/Release/app/mif_desktop.exe outputs/demo/focus_01.png outputs/demo/focus
 ```
 
 生成两张互补清晰的 `focus_01.png`、`focus_02.png`，一张全清晰 `reference.png`，
-以及 `fused_guided.png`、`fused_pyramid.png`、`fused_dct.png`、`fused_dtcwt.png`、
-`fused_gfgfgf.png` 五种融合结果。桌面程序只导入两张 `focus_*.png` 作为输入；
+以及 `fused_guided.png`、`fused_pyramid.png`、`fused_block_variance.png`、`fused_dtcwt.png`、
+`fused_gfg_fgf.png` 五种融合结果。桌面程序只导入两张 `focus_*.png` 作为输入；
 导入整个示例目录会把参考图和结果图也加入图像栈。
 
 样例由 C++ 示例程序生成，不维护重复的图片数据目录。Qt 支持中文图片路径；
 C++ 命令行示例使用 OpenCV 文件路径接口，在 Windows 上建议使用 ASCII 路径。
+
+## 打包 Windows 测试版
+
+GitHub Release 附件使用完整的便携 ZIP。使用者解压后运行 `mif_desktop.exe`；
+面向 Windows 10/11 x64，附带 Qt/OpenCV DLL、必要插件、MSVC 运行库和第三方说明。
+构建目录和二进制附件仍放在被 Git 忽略的 `outputs/`，不提交到源码仓库。
+
+准备好 MSVC 安装目录中可再分发的 `Microsoft.VC143.CRT` 文件夹，以及本次实际依赖
+对应的补充许可证与源码说明目录，再从仓库根目录执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 `
+  -Version v0.2.0-preview.1 `
+  -ExpectedCommit (git rev-parse HEAD) `
+  -RuntimeDirectory '<Visual Studio>/VC/Redist/MSVC/<版本>/x64/Microsoft.VC143.CRT' `
+  -AdditionalNoticesDirectory 'outputs/release-notices' `
+  -BuildPreset local -BuildDirectory build/local
+```
+
+脚本要求 x64 MSVC 构建已配置，并由同名构建及测试预设启用桌面程序、交付目录和测试。
+算法、界面、构建输入和子模块必须与指定提交一致；允许尚未提交的发布文档修改仅限
+`README.md`、本页及打包脚本，并在包内记录。补充说明须覆盖实际随包依赖；例如 Qt、
+ICU、ANGLE、OpenSSL、zstd 和 MSVC 的许可与源码来源，不能只依据过时的包管理器
+元信息推断 DLL 版本。现有 `app/licenses/` 中的说明会一并保留。
+
+脚本会构建 Release、执行测试、核对交付 EXE/DLL 与构建结果一致，加入可再分发的
+MSVC CRT，再扫描 DLL 导入表。Windows 提供的 `D3Dcompiler_47.dll` 不复制进包；当前
+Widgets 界面使用栅格绘制，也不附带可选的软件 OpenGL 后备库 `opengl32sw.dll`。
+ZIP 生成后解压并逐文件比较 SHA256，在仅包含包目录及 Windows 系统目录的 PATH 下
+启动解压后的程序，检查本地 Qt 插件和已加载 DLL 的来源，结束检查后关闭进程。
+这属于开发机器上的隔离启动检查，不能替代独立干净机器上的测试。
+
+产物位于 `outputs/releases/`：
+
+- `Multi-focus-Image-Fusion-<版本>-windows-x64.zip`
+- 同名 `.zip.sha256` 校验文件
+
+ZIP 内含 UTF-8 中文 `README.txt`、`BUILD_INFO.json`、`FILES.sha256` 和三张示例图。
+仅将两张 `focus_*.png` 用作输入；`reference.png` 用于观察预期清晰效果。
+脚本拒绝覆盖已存在的同名发行包，并清除本次专用临时目录。确认附件、源码提交和
+版本标签一致后，将 ZIP 和校验文件上传为 GitHub **Pre-release**，供其他人下载测试。
 
 ## 开发文件与清理
 

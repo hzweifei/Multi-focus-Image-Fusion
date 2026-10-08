@@ -6,16 +6,22 @@ else()
 endif()
 add_library(mif_core ${_mif_library_type}
     # 公开接口和完整处理流程。
+    include/mif/mif.hpp
+    include/mif/fusion/options_base.hpp
     include/mif/fusion.hpp
     include/mif/fusion_options.hpp
-    include/mif/fusion/focus_options.hpp
-    include/mif/fusion/guided_filter_options.hpp
-    include/mif/fusion/laplacian_pyramid_options.hpp
-    include/mif/fusion/dct_options.hpp
-    include/mif/fusion/dtcwt_options.hpp
-    include/mif/fusion/gfgfgf_options.hpp
+    include/mif/fusion/focus_measure_options.hpp
+    include/mif/fusion/guided_filter_fusion_options.hpp
+    include/mif/fusion/laplacian_pyramid_fusion_options.hpp
+    include/mif/fusion/block_variance_fusion_options.hpp
+    include/mif/fusion/dtcwt_fusion_options.hpp
+    include/mif/fusion/gfg_fgf_fusion_options.hpp
     include/mif/registration.hpp
     include/mif/registration_options.hpp
+    include/mif/registration/options_base.hpp
+    include/mif/registration/no_registration_options.hpp
+    include/mif/registration/ecc_registration_options.hpp
+    include/mif/registration/sift_registration_options.hpp
     include/mif/pipeline.hpp
     include/mif/progress.hpp
     src/pipeline.cpp
@@ -25,32 +31,28 @@ add_library(mif_core ${_mif_library_type}
     src/common/image_stack.hpp
     src/common/image_stack.cpp
     # 融合入口、融合专用工具及具体方法。
+    src/fusion/registry.hpp
+    src/fusion/registry.cpp
     src/fusion/fusion.cpp
-    src/fusion/method_result.hpp
     src/fusion/common/focus_measure.hpp
     src/fusion/common/focus_measure.cpp
     src/fusion/common/weight_map.hpp
     src/fusion/common/weight_map.cpp
     src/fusion/common/guided_filter.hpp
     src/fusion/common/guided_filter.cpp
-    src/fusion/common/fast_guided_filter.hpp
     src/fusion/common/fast_guided_filter.cpp
-    src/fusion/guided_filter/guided_filter.hpp
-    src/fusion/guided_filter/guided_filter.cpp
-    src/fusion/laplacian_pyramid/laplacian_pyramid.hpp
-    src/fusion/laplacian_pyramid/laplacian_pyramid.cpp
-    src/fusion/dct/dct.hpp
-    src/fusion/dct/dct.cpp
-    src/fusion/dtcwt/dtcwt.hpp
-    src/fusion/dtcwt/dtcwt.cpp
+    src/fusion/guided_filter.cpp
+    src/fusion/laplacian_pyramid.cpp
+    src/fusion/block_variance.cpp
+    src/fusion/dtcwt.cpp
     src/fusion/dtcwt/transform.hpp
     src/fusion/dtcwt/transform.cpp
-    src/fusion/gfgfgf/gfgfgf.hpp
-    src/fusion/gfgfgf/gfgfgf.cpp
-    src/fusion/gfgfgf/focus_information.hpp
-    src/fusion/gfgfgf/focus_information.cpp
+    src/fusion/gfg_fgf.cpp
+    src/fusion/gfg_fgf/focus_information.hpp
+    src/fusion/gfg_fgf/focus_information.cpp
     # 配准入口及具体变换估计方法。
-    src/registration/registration.hpp
+    src/registration/registry.hpp
+    src/registration/registry.cpp
     src/registration/registration.cpp
     src/registration/ecc.cpp
     src/registration/sift_homography.cpp
@@ -94,10 +96,15 @@ install(TARGETS mif_core EXPORT MifTargets
     LIBRARY DESTINATION lib COMPONENT SDK
     ARCHIVE DESTINATION lib COMPONENT SDK
 )
-# 原地更新旧 SDK 时，移除已拆分的公开头，避免两份参数类型定义同时残留。
+# 原地更新旧 SDK 时，移除已拆分或合并的公开头，避免两份类型定义同时残留。
 # 只删除本项目明确废弃的文件，不清空使用者的整个 include 目录。
 install(CODE [[
-    file(REMOVE "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/include/mif/options.hpp")
+    foreach(_obsolete_header IN ITEMS options.hpp fusion/focus_options.hpp
+            fusion/guided_filter_options.hpp fusion/laplacian_pyramid_options.hpp
+            fusion/dct_options.hpp fusion/dtcwt_options.hpp fusion/gfgfgf_options.hpp
+            registration/motion_model.hpp)
+        file(REMOVE "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/include/mif/${_obsolete_header}")
+    endforeach()
 ]] COMPONENT SDK)
 install(DIRECTORY include/mif DESTINATION include COMPONENT SDK)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/include/mif/export.hpp" DESTINATION include/mif COMPONENT SDK)
@@ -106,7 +113,8 @@ include(CMakePackageConfigHelpers)
 configure_package_config_file("${PROJECT_SOURCE_DIR}/cmake/MifConfig.cmake.in"
     "${CMAKE_CURRENT_BINARY_DIR}/MifConfig.cmake" INSTALL_DESTINATION lib/cmake/Mif)
 write_basic_package_version_file("${CMAKE_CURRENT_BINARY_DIR}/MifConfigVersion.cmake"
-    VERSION ${PROJECT_VERSION} COMPATIBILITY SameMajorVersion)
+    # 0.x 阶段的不同次版本可能调整接口，只声明同一次版本内的兼容性。
+    VERSION ${PROJECT_VERSION} COMPATIBILITY SameMinorVersion)
 install(EXPORT MifTargets NAMESPACE mif:: DESTINATION lib/cmake/Mif COMPONENT SDK)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/MifConfig.cmake"
     "${CMAKE_CURRENT_BINARY_DIR}/MifConfigVersion.cmake" DESTINATION lib/cmake/Mif COMPONENT SDK)

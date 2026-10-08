@@ -3,8 +3,9 @@
 #include <QThread>
 #include <QStringList>
 #include <QMetaType>
-#include <mif/fusion_options.hpp>
-#include <mif/registration_options.hpp>
+#include <mif/fusion/options_base.hpp>
+#include <mif/registration/options_base.hpp>
+#include <memory>
 #include <opencv2/core.hpp>
 
 // 允许 Qt 排队连接复制 cv::Mat 的引用计数对象，跨线程传递融合结果。
@@ -17,8 +18,8 @@ class FusionWorker : public QThread {
     Q_OBJECT
 public:
     /// 保存输入路径及两份独立参数快照；父对象通常是主窗口。
-    FusionWorker(QStringList paths, RegistrationOptions registration_options,
-                 FusionOptions fusion_options, QObject* parent = nullptr);
+    FusionWorker(QStringList paths, const RegistrationOptionsBase& registration_options,
+                 const FusionOptionsBase& fusion_options, QObject* parent = nullptr);
 signals:
     /// 总进度 [0, 100] 和可直接显示的中文阶段名称。
     void progress(int value, const QString& stage);
@@ -34,9 +35,9 @@ protected:
 private:
     // 顺序在任务启动时固定，第一张图片作为可选配准流程的参考。
     QStringList paths_;
-    // 配准与融合互不混用参数；两份副本均不与界面控件共享可变状态。
-    RegistrationOptions registration_options_;
-    FusionOptions fusion_options_;
+    // 在构造时按真实类型克隆；配置及其所有权随后保持只读，不依赖调用方的生命周期。
+    const std::unique_ptr<const RegistrationOptionsBase> registration_options_;
+    const std::unique_ptr<const FusionOptionsBase> fusion_options_;
 };
 } // namespace mif::desktop
 

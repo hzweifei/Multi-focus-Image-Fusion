@@ -18,13 +18,13 @@ struct FusionResult {
     /// GFG-FGF 记录最终权重最大的原始输入序号，并列时取较小序号。
     /// DTCWT 按尺度、方向选择复系数，无单一像素来源，因此返回空图。
     /// 来源图用于观察贡献，不代表置信度。
-    cv::Mat focus_indices;
+    cv::Mat source_index_map;
     /// 可选的 CV_32FC1 权重诊断图，顺序与输入相同，与 image 同尺寸。
     /// GFF/金字塔提供细节权重，DCT 提供选块权重，GFG-FGF 提供最终融合权重。
     /// 这些权重非负、逐像素总和约为 1；不含 GFF 基础权重或金字塔各层权重。
     /// DTCWT 不提供空间权重，始终返回空列表。
-    /// keep_weight_maps 为 false 或方法未提供权重诊断时为空。
-    std::vector<cv::Mat> weights;
+    /// include_weight_maps 为 false 或方法未提供权重诊断时为空。
+    std::vector<cv::Mat> weight_maps;
 };
 
 /**
@@ -32,7 +32,7 @@ struct FusionResult {
  * @param images 至少两张已对齐的同尺寸、同类型二维图像，各边至少 2 像素。
  *               支持 CV_8U/CV_16U/CV_32F、灰度或 BGR；浮点值须有限且在 [0, 1]。
  *               允许非连续 ROI；图像数量须能用 int 表示。
- * @param options 方法选择、各方法独立配置和诊断开关；仅校验所选方法的配置。
+ * @param options 具体方法的参数与诊断开关；参数动态类型决定算法，无需另传方法标识。
  * @param progress 可选同步回调，进度为 [0, 100]，返回 false 请求取消。
  * @throws std::invalid_argument 输入或融合参数无效。
  * @throws cv::Exception OpenCV 处理失败。
@@ -42,7 +42,7 @@ struct FusionResult {
  * 各次调用不共享可变算法状态；回调及结果的跨线程访问由调用者管理。
  */
 MIF_EXPORT FusionResult fuse(const std::vector<cv::Mat>& images,
-                             const FusionOptions& options = {},
+                             const FusionOptionsBase& options = GuidedFilterFusionOptions{},
                              const ProgressCallback& progress = {});
 
 } // 命名空间 mif

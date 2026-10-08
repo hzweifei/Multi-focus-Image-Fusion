@@ -1,4 +1,4 @@
-#include "fusion/gfgfgf/focus_information.hpp"
+#include "fusion/gfg_fgf/focus_information.hpp"
 #include "fusion/common/weight_map.hpp"
 #include <opencv2/imgproc.hpp>
 #include <cmath>

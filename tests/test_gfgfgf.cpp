@@ -1,6 +1,6 @@
 #include "fixtures.hpp"
-#include "fusion/gfgfgf/focus_information.hpp"
-#include "fusion/common/fast_guided_filter.hpp"
+#include "fusion/gfg_fgf/focus_information.hpp"
+#include "fusion/common/guided_filter.hpp"
 #include <mif/fusion.hpp>
 #include <opencv2/ximgproc/edge_filter.hpp>
 #include <algorithm>
@@ -82,12 +82,11 @@ void checkPaperDecisions() {
 }
 
 void checkAllPlanesByDefault() {
-    mif::FusionOptions options;
-    options.method = mif::FusionMethod::Gfgfgf;
-    options.keep_weight_maps = true;
-    require(options.gfgfgf.selection_ratio == 0,
+    mif::GfgFgfFusionOptions options;
+    options.include_weight_maps = true;
+    require(options.selection_ratio == 0,
             "The paper path must compare all focal planes by default");
-    require(options.gfgfgf.guided_subsample == 4,
+    require(options.guided_subsample_factor == 4,
             "The paper path did not enable fast guided filtering by default");
     cv::Mat strong(65, 97, CV_32F, cv::Scalar(0.5));
     cv::Mat local = strong.clone();
@@ -99,11 +98,11 @@ void checkAllPlanesByDefault() {
     }
     // 第二张的全局梯度很弱，但独自提供右侧纹理。默认路径必须让它参与该区域。
     const auto all_planes = mif::fuse({strong, local}, options);
-    require(all_planes.weights[1].at<float>(32, 80) > 0.9f,
+    require(all_planes.weight_maps[1].at<float>(32, 80) > 0.9f,
             "Default GFG-FGF discarded a weak frame containing uniquely focused local detail");
-    options.gfgfgf.selection_ratio = 0.15;
+    options.selection_ratio = 0.15;
     const auto selected = mif::fuse({strong, local}, options);
-    require(cv::norm(selected.weights[1], cv::NORM_INF) == 0,
+    require(cv::norm(selected.weight_maps[1], cv::NORM_INF) == 0,
             "Optional global gradient preselection did not filter the deliberately weak frame");
 }
 

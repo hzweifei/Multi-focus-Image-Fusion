@@ -1,4 +1,4 @@
-#include "fusion/common/fast_guided_filter.hpp"
+#include "fusion/common/guided_filter.hpp"
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <cmath>

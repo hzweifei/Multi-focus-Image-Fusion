@@ -14,20 +14,13 @@ if len(sys.argv) < 4:
 images = [cv2.imread(path, cv2.IMREAD_UNCHANGED) for path in sys.argv[2:]]
 if any(image is None for image in images):
     raise SystemExit("One or more images could not be read")
-options = mif.FusionOptions()
-# 默认演示引导滤波，也可选择 LAPLACIAN_PYRAMID、DCT、DTCWT、GFGFGF。
-options.method = mif.FusionMethod.GUIDED_FILTER
-# 每种方法各自保存完整参数，修改一种方法不会覆盖另一种方法的设置。
-options.guided_filter.focus.measure = mif.FocusMeasure.MODIFIED_LAPLACIAN
-options.guided_filter.focus.window = 9
-options.guided_filter.detail_radius = 3
-# 改用金字塔时可设置 options.laplacian_pyramid.focus.window 和 .levels。
-# 块方差：options.method = mif.FusionMethod.DCT；options.dct.block_size = 8。
-# 复小波：options.method = mif.FusionMethod.DTCWT；options.dtcwt.levels = 4。
-# GFG-FGF：options.method = mif.FusionMethod.GFGFGF；options.gfgfgf.guided_subsample = 4。
-# 默认保留全部焦面；可选筛帧设置 options.gfgfgf.selection_ratio = 0.15。
-# difference_threshold 是 GFG 梯度阈值；弱梯度位置使用局部均值残差。
-# 此入口只执行融合；配准使用独立的 RegistrationOptions 和 register_images。
+# 参数类型决定方法，调用入口统一为 mif.fuse。
+options = mif.GuidedFilterFusionOptions()
+options.focus.measure = mif.FocusMeasure.MODIFIED_LAPLACIAN
+options.focus.window_size = 9
+options.detail_radius = 3
+# 可替换为 LaplacianPyramidFusionOptions、BlockVarianceFusionOptions、
+# DtcwtFusionOptions 或 GfgFgfFusionOptions，并直接设置该方法的字段。
 result = mif.fuse(images, options)
 suffix = sys.argv[1].lower().rsplit(".", 1)[-1]
 # 根据输出精度限制文件格式，避免编码器自动降精度而丢失数据。

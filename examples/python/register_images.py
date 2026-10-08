@@ -28,17 +28,17 @@ if any(image is None for image in images):
     raise SystemExit("One or more images could not be read")
 
 # 这里只创建配准设置，不需要准备任何融合参数。
-options = mif.RegistrationOptions()
-options.method = {
-    "none": mif.RegistrationMethod.NONE,
-    "ecc": mif.RegistrationMethod.ECC,
-    "sift": mif.RegistrationMethod.SIFT,
-}[args.method]
-options.motion_model = {
-    "translation": mif.MotionModel.TRANSLATION,
-    "affine": mif.MotionModel.AFFINE,
-    "homography": mif.MotionModel.HOMOGRAPHY,
-}[args.motion_model]
+options = {
+    "none": mif.NoRegistrationOptions,
+    "ecc": mif.EccRegistrationOptions,
+    "sift": mif.SiftRegistrationOptions,
+}[args.method]()
+if isinstance(options, mif.EccRegistrationOptions):
+    options.motion_model = {
+        "translation": mif.MotionModel.TRANSLATION,
+        "affine": mif.MotionModel.AFFINE,
+        "homography": mif.MotionModel.HOMOGRAPHY,
+    }[args.motion_model]
 registered = mif.register_images(images, options)
 args.output_dir.mkdir(parents=True, exist_ok=True)
 for index, image in enumerate(registered["images"], start=1):
@@ -47,8 +47,8 @@ for index, image in enumerate(registered["images"], start=1):
     # 输入顺序与结果一一对应，文件名使用连续序号以保持后续导入顺序。
     if not cv2.imwrite(str(target), image, [cv2.IMWRITE_TIFF_COMPRESSION, 1]):
         raise SystemExit(f"Could not save {target}")
-print("共同有效区域：", registered["crop"])
+print("共同有效区域：", registered["crop_region"])
 print("已保存配准图像到：", args.output_dir)
 
-# 如需继续融合，可直接调用：mif.fuse(registered["images"], mif.FusionOptions())。
-# 一次完成两步则使用 mif.register_and_fuse(images, options, mif.FusionOptions())。
+# 如需继续融合，可直接调用：mif.fuse(registered["images"], mif.GuidedFilterFusionOptions())。
+# 一次完成两步则使用 mif.register_and_fuse(images, options, mif.GuidedFilterFusionOptions())。

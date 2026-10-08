@@ -1,4 +1,5 @@
-#include "fusion/laplacian_pyramid/laplacian_pyramid.hpp"
+#include "fusion/registry.hpp"
+#include <mif/fusion/laplacian_pyramid_fusion_options.hpp>
 #include "fusion/common/focus_measure.hpp"
 #include "fusion/common/guided_filter.hpp"
 #include "fusion/common/weight_map.hpp"
@@ -70,18 +71,20 @@ cv::Mat blendPyramid(const std::vector<cv::Mat>& images,
     return result;
 }
 
-} // 匿名命名空间
-
-void validateLaplacianPyramidOptions(const LaplacianPyramidOptions& options) {
+/// 校验本方法的清晰度、细节权重和层数参数；无效参数抛 invalid_argument。
+void validateLaplacianPyramidOptions(const LaplacianPyramidFusionOptions& options) {
     validateFocusOptions(options.focus);
     if (options.detail_radius < 1 || options.detail_radius > 255 ||
-        options.levels < 1 || options.levels > 16)
+        options.max_levels < 1 || options.max_levels > 16)
         throw std::invalid_argument("Invalid Laplacian-pyramid options; check radius and levels");
     validateGuidedEpsilon(options.detail_epsilon);
 }
 
+/// 金字塔融合：自行评分、生成细节权重、逐尺度融合和重建，并提供来源诊断。
+/// images 至少两张同尺寸 CV_32F 灰度或 BGR 图像，值域 [0, 1]；options 已校验。
+/// 不修改输入；进度回调同步执行，取消及调用者异常原样传播。
 MethodResult laplacianPyramidFusion(const std::vector<cv::Mat>& images,
-                                    const LaplacianPyramidOptions& options, const ProgressCallback& progress) {
+                                    const LaplacianPyramidFusionOptions& options, const ProgressCallback& progress) {
     auto maps = prepareFocusMaps(images, options.focus, progress);
     std::vector<cv::Mat> detail_weights;
     for (size_t i = 0; i < images.size(); ++i) {
@@ -93,11 +96,18 @@ MethodResult laplacianPyramidFusion(const std::vector<cv::Mat>& images,
     maps.decisions.clear();
     normalizeWeights(detail_weights);
     MethodResult result;
-    result.image = blendPyramid(images, detail_weights, options.levels, progress);
+    result.image = blendPyramid(images, detail_weights, options.max_levels, progress);
     // 诊断使用全分辨率细节权重；它不包含重建时各尺度平滑后的全部贡献。
-    result.focus_indices = dominantIndices(detail_weights);
-    result.weights = std::move(detail_weights);
+    result.source_index_map = dominantIndices(detail_weights);
+    result.weight_maps = std::move(detail_weights);
     return result;
+}
+
+} // 匿名命名空间
+
+/// 在本文件绑定参数校验和执行；注册表只需显式引用这个函数。
+void registerLaplacianPyramidFusionMethod() {
+    registerFusionMethod(validateLaplacianPyramidOptions, laplacianPyramidFusion);
 }
 
 } // 命名空间 mif::detail::fusion

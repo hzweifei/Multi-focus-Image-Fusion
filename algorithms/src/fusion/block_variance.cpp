@@ -2,7 +2,8 @@
 // 参考项目为 MIT 许可，Copyright (c) 2025 OpenFocus Contributors；完整声明见 THIRD_PARTY_NOTICES.md。
 // 本文件为独立 C++ 实现：保留块方差与两次中值一致性步骤，同时支持原位深、完整边缘、
 // int32 多帧索引，以及平坦/并列块的等权融合；不复刻上游裁边和 uint8 索引限制。
-#include "fusion/dct/dct.hpp"
+#include "fusion/registry.hpp"
+#include <mif/fusion/block_variance_fusion_options.hpp>
 #include "fusion/common/weight_map.hpp"
 #include "common/grayscale.hpp"
 #include "common/progress.hpp"
@@ -52,15 +53,17 @@ cv::Mat expandBlocks(const cv::Mat& blocks, const cv::Size& size, int block_size
     return expanded;
 }
 
-} // 匿名命名空间
-
-void validateDctOptions(const DctOptions& options) {
-    if (options.block_size < 2 || options.block_size > 128 || options.consistency_window < 1 ||
-        options.consistency_window > 31 || options.consistency_window % 2 == 0)
+/// 校验块边长和块级一致性窗口；无效配置抛 std::invalid_argument。
+void validateBlockVarianceOptions(const BlockVarianceFusionOptions& options) {
+    if (options.block_size < 2 || options.block_size > 128 || options.consistency_window_size < 1 ||
+        options.consistency_window_size > 31 || options.consistency_window_size % 2 == 0)
         throw std::invalid_argument("Invalid DCT block-variance options; check block size and consistency window");
 }
 
-MethodResult dctFusion(const std::vector<cv::Mat>& images, const DctOptions& options,
+/// 归一化 CV_32F 灰度/BGR 栈的块方差选帧融合；不修改输入，配置应已校验。
+/// 返回与原图同尺寸的图像、CV_32S 原始输入索引与逐图归一化权重。
+/// 块方差完全并列时均分权重；进度及取消异常原样传播。
+MethodResult blockVarianceFusion(const std::vector<cv::Mat>& images, const BlockVarianceFusionOptions& options,
                        const ProgressCallback& progress) {
     const auto size = images.front().size();
     const cv::Size grid((size.width - 1) / options.block_size + 1,
@@ -91,8 +94,8 @@ MethodResult dctFusion(const std::vector<cv::Mat>& images, const DctOptions& opt
     auto block_weights = decisionWeights(scores);
     scores.clear();
     cv::Mat indices = dominantIndices(block_weights);
-    indices = medianIndices(indices, options.consistency_window, 0, progress);
-    indices = medianIndices(indices, options.consistency_window, 1, progress);
+    indices = medianIndices(indices, options.consistency_window_size, 0, progress);
+    indices = medianIndices(indices, options.consistency_window_size, 1, progress);
     for (int y = 0; y < grid.height; ++y) {
         for (int x = 0; x < grid.width; ++x) {
             size_t tied = 0;
@@ -109,14 +112,21 @@ MethodResult dctFusion(const std::vector<cv::Mat>& images, const DctOptions& opt
     report(progress, 70, "weights");
     MethodResult result;
     result.image = cv::Mat::zeros(size, images.front().type());
-    result.weights.reserve(images.size());
+    result.weight_maps.reserve(images.size());
     for (size_t i = 0; i < images.size(); ++i) {
         report(progress, 75 + static_cast<int>(20 * i / images.size()), "blend");
-        result.weights.push_back(expandBlocks(block_weights[i], size, options.block_size));
-        result.image += images[i].mul(expandWeight(result.weights.back(), images.front().channels()));
+        result.weight_maps.push_back(expandBlocks(block_weights[i], size, options.block_size));
+        result.image += images[i].mul(expandWeight(result.weight_maps.back(), images.front().channels()));
     }
-    result.focus_indices = dominantIndices(result.weights);
+    result.source_index_map = dominantIndices(result.weight_maps);
     return result;
+}
+
+} // 匿名命名空间
+
+/// 在本文件绑定参数校验和执行；注册表只需显式引用这个函数。
+void registerBlockVarianceFusionMethod() {
+    registerFusionMethod(validateBlockVarianceOptions, blockVarianceFusion);
 }
 
 } // 命名空间 mif::detail::fusion

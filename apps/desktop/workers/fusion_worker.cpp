@@ -10,10 +10,10 @@
 #include <vector>
 
 namespace mif::desktop {
-FusionWorker::FusionWorker(QStringList paths, RegistrationOptions registration_options,
-                           FusionOptions fusion_options, QObject* parent)
-    : QThread(parent), paths_(std::move(paths)), registration_options_(registration_options),
-      fusion_options_(fusion_options) {
+FusionWorker::FusionWorker(QStringList paths, const RegistrationOptionsBase& registration_options,
+                           const FusionOptionsBase& fusion_options, QObject* parent)
+    : QThread(parent), paths_(std::move(paths)), registration_options_(registration_options.clone()),
+      fusion_options_(fusion_options.clone()) {
     // 排队信号复制的是 Mat 头和共享内存的引用计数，像素内存会保持到接收方释放。
     qRegisterMetaType<cv::Mat>("cv::Mat");
 }
@@ -32,7 +32,7 @@ void FusionWorker::run() {
         }
         // 回调仍在工作线程执行，只发信号并返回是否继续，不操作 GUI 对象。
         // 管线先执行独立配准再执行纯融合，并提供已经统一到 [0, 100] 的单调进度。
-        const auto result = registerAndFuse(images, registration_options_, fusion_options_,
+        const auto result = registerAndFuse(images, *registration_options_, *fusion_options_,
                                            [this](int percent, const std::string& stage) {
             // 核心库用稳定的阶段标识，中文显示文案只放在界面层。
             static const std::map<std::string, QString> names{

@@ -10,14 +10,14 @@ namespace {
 /// 新方法的公共结果约定：完整尺寸、原输入编号，以及有限、非负、逐像素归一的权重。
 void checkDiagnostics(const mif::FusionResult& result, const cv::Size& size, size_t count) {
     require(result.image.size() == size, "Traditional fusion changed input dimensions");
-    require(result.focus_indices.type() == CV_32S && result.focus_indices.size() == size,
+    require(result.source_index_map.type() == CV_32S && result.source_index_map.size() == size,
             "Traditional fusion lost int32 source diagnostics");
-    require(result.weights.size() == count, "Traditional fusion lost original input weight slots");
+    require(result.weight_maps.size() == count, "Traditional fusion lost original input weight slots");
     double minimum, maximum;
-    cv::minMaxLoc(result.focus_indices, &minimum, &maximum);
+    cv::minMaxLoc(result.source_index_map, &minimum, &maximum);
     require(minimum >= 0 && maximum < static_cast<double>(count), "Source diagnostics refer to invalid input indices");
     cv::Mat total = cv::Mat::zeros(size, CV_32F);
-    for (const auto& weight : result.weights) {
+    for (const auto& weight : result.weight_maps) {
         require(weight.type() == CV_32F && weight.size() == size &&
                 cv::checkRange(weight, true, nullptr, 0, 1.00001), "Traditional fusion returned invalid weights");
         total += weight;
@@ -27,7 +27,8 @@ void checkDiagnostics(const mif::FusionResult& result, const cv::Size& size, siz
 }
 
 /// 同一图像的重复输入应保持不变；不同常量图像应等权平均，不能因为无纹理变黑或偏向首帧。
-void checkIdentityAndFlat(mif::FusionMethod method) {
+template<class Options>
+void checkIdentityAndFlat(Options options) {
     for (int channels : {1, 3}) {
         auto sharp = texture(25, 37);
         if (channels == 3) {
@@ -40,15 +41,13 @@ void checkIdentityAndFlat(mif::FusionMethod method) {
             const double scale = depth == CV_16U ? 257.0 : depth == CV_32F ? 1.0 / 255 : 1.0;
             cv::Mat image;
             sharp.convertTo(image, depth, scale);
-            mif::FusionOptions options;
-            options.method = method;
-            options.keep_weight_maps = true;
+            options.include_weight_maps = true;
             const auto result = mif::fuse({image, image, image}, options);
             checkDiagnostics(result, image.size(), 3);
             require(result.image.type() == image.type(), "Traditional fusion changed input depth or channels");
             require(cv::norm(result.image, image, cv::NORM_INF) <= (depth == CV_32F ? 2e-6 : 1),
                     "Traditional fusion does not preserve repeated identical inputs");
-            for (const auto& weight : result.weights)
+            for (const auto& weight : result.weight_maps)
                 require(cv::norm(weight, cv::Mat(image.size(), CV_32F, cv::Scalar(1.0 / 3)), cv::NORM_INF) < 2e-6,
                         "Identical inputs did not receive symmetric weights");
             const double range = depth == CV_8U ? 255 : depth == CV_16U ? 65535 : 1;
@@ -66,21 +65,18 @@ void checkIdentityAndFlat(mif::FusionMethod method) {
     }
     // 公共入口允许 2 像素边长；块大小或梯度内区不应把这种输入变成空图。
     const cv::Mat tiny(2, 3, CV_32F, cv::Scalar(0.4));
-    mif::FusionOptions options;
-    options.method = method;
     require(cv::norm(mif::fuse({tiny, tiny}, options).image, tiny, cv::NORM_INF) < 2e-6,
             "Traditional fusion rejected or corrupted a tiny valid image");
 }
 
 /// 真实互补失焦图像应比任一源图更接近清晰参考；奇数尺寸和彩色路径均参与计算。
-void checkQuality(mif::FusionMethod method) {
+template<class Options>
+void checkQuality(Options options) {
     for (int channels : {1, 3}) {
         auto sharp = texture(129, 193);
         if (channels == 3) cv::cvtColor(sharp, sharp, cv::COLOR_GRAY2BGR);
         const auto stack = focusStack(sharp);
-        mif::FusionOptions options;
-        options.method = method;
-        options.keep_weight_maps = true;
+        options.include_weight_maps = true;
         const auto result = mif::fuse(stack, options);
         checkDiagnostics(result, sharp.size(), stack.size());
         require(mae(result.image, sharp) < std::min(mae(stack[0], sharp), mae(stack[1], sharp)) * 0.85,
@@ -89,7 +85,8 @@ void checkQuality(mif::FusionMethod method) {
 }
 
 /// 257 帧中只有最后一帧有纹理，验证选帧和诊断没有经过 uint8 的中间截断。
-void checkLargeStack(mif::FusionMethod method) {
+template<class Options>
+void checkLargeStack(Options options) {
     std::vector<cv::Mat> images(257, cv::Mat::zeros(17, 19, CV_8U));
     images.back() = cv::Mat(17, 19, CV_8U);
     // 独立生成每个完整/残缺块都有方差的纹理，同时保留可被 Scharr 检出的梯度。
@@ -97,20 +94,17 @@ void checkLargeStack(mif::FusionMethod method) {
     for (int y = 0; y < images.back().rows; ++y)
         for (int x = 0; x < images.back().cols; ++x)
             images.back().at<unsigned char>(y, x) = static_cast<unsigned char>(20 + (17 * x + 31 * y) % 215);
-    mif::FusionOptions options;
-    options.method = method;
-    options.keep_weight_maps = true;
+    options.include_weight_maps = true;
     const auto result = mif::fuse(images, options);
     checkDiagnostics(result, images.front().size(), images.size());
-    require(cv::countNonZero(result.focus_indices != 256) == 0, "Traditional source index was truncated or renumbered");
+    require(cv::countNonZero(result.source_index_map != 256) == 0, "Traditional source index was truncated or renumbered");
     require(cv::norm(result.image, images.back(), cv::NORM_INF) <= 1, "Traditional fusion lost the only textured frame");
 }
 
 /// 公共入口必须保留方法内各阶段的取消点、单调进度，以及调用者异常的原始类型和消息。
-void checkProgress(mif::FusionMethod method) {
+template<class Options>
+void checkProgress(Options options) {
     const auto images = focusStack(texture(25, 37));
-    mif::FusionOptions options;
-    options.method = method;
     struct CallbackError : std::runtime_error { using std::runtime_error::runtime_error; };
     for (const std::string target : {"focus", "weights", "blend", "finish"}) {
         bool cancelled = false;
@@ -147,7 +141,7 @@ void checkProgress(mif::FusionMethod method) {
     require(previous == 100 && last_stage == "done", "Traditional fusion did not report completion");
 }
 
-void expectInvalid(const std::vector<cv::Mat>& images, const mif::FusionOptions& options) {
+void expectInvalid(const std::vector<cv::Mat>& images, const mif::FusionOptionsBase& options) {
     bool rejected = false;
     try { mif::fuse(images, options); }
     catch (const std::invalid_argument&) { rejected = true; }
@@ -157,10 +151,10 @@ void expectInvalid(const std::vector<cv::Mat>& images, const mif::FusionOptions&
 } // 匿名命名空间
 
 void testDctFusion() {
-    checkIdentityAndFlat(mif::FusionMethod::Dct);
-    checkQuality(mif::FusionMethod::Dct);
-    checkLargeStack(mif::FusionMethod::Dct);
-    checkProgress(mif::FusionMethod::Dct);
+    checkIdentityAndFlat(mif::BlockVarianceFusionOptions{});
+    checkQuality(mif::BlockVarianceFusionOptions{});
+    checkLargeStack(mif::BlockVarianceFusionOptions{});
+    checkProgress(mif::BlockVarianceFusionOptions{});
 
     // 三帧交替赢得不同块，右/下边缘不足整块仍须保留；不能整体 resize 后移动块边界。
     const cv::Size size(27, 19);
@@ -176,14 +170,13 @@ void testDctFusion() {
             indices.at<int>(y, x) = source;
         }
     }
-    mif::FusionOptions options;
-    options.method = mif::FusionMethod::Dct;
-    options.dct.consistency_window = 1;
-    options.keep_weight_maps = true;
+    mif::BlockVarianceFusionOptions options;
+    options.consistency_window_size = 1;
+    options.include_weight_maps = true;
     const auto result = mif::fuse(images, options);
     checkDiagnostics(result, size, images.size());
     require(cv::norm(result.image, sharp, cv::NORM_INF) < 1e-6, "DCT lost partial edge blocks or selected the wrong block");
-    require(cv::countNonZero(result.focus_indices != indices) == 0, "DCT block boundaries shifted at odd image dimensions");
+    require(cv::countNonZero(result.source_index_map != indices) == 0, "DCT block boundaries shifted at odd image dimensions");
 
     // 7×7 块网格中只有中心块由第二帧赢得，两次中值应消除这个孤立来源块。
     cv::Mat first(56, 56, CV_32F), second(56, 56, CV_32F, cv::Scalar(0.5));
@@ -192,46 +185,45 @@ void testDctFusion() {
     const cv::Rect center(24, 24, 8, 8);
     first(center).copyTo(second(center));
     first(center).setTo(0.5);
-    require(mif::fuse({first, second}, options).focus_indices.at<int>(28, 28) == 1,
+    require(mif::fuse({first, second}, options).source_index_map.at<int>(28, 28) == 1,
             "DCT consistency fixture did not create an isolated source block");
-    options.dct.consistency_window = 3;
-    require(cv::countNonZero(mif::fuse({first, second}, options).focus_indices) == 0,
+    options.consistency_window_size = 3;
+    require(cv::countNonZero(mif::fuse({first, second}, options).source_index_map) == 0,
             "DCT consistency filtering did not suppress an isolated source block");
 
     for (int block : {1, 129}) {
-        options.dct.block_size = block;
+        options.block_size = block;
         expectInvalid(images, options);
     }
-    options.dct.block_size = 8;
+    options.block_size = 8;
     for (int window : {0, 2, 33}) {
-        options.dct.consistency_window = window;
+        options.consistency_window_size = window;
         expectInvalid(images, options);
     }
 }
 
 void testGfgfgfFusion() {
-    checkIdentityAndFlat(mif::FusionMethod::Gfgfgf);
-    checkQuality(mif::FusionMethod::Gfgfgf);
-    checkLargeStack(mif::FusionMethod::Gfgfgf);
-    checkProgress(mif::FusionMethod::Gfgfgf);
+    checkIdentityAndFlat(mif::GfgFgfFusionOptions{});
+    checkQuality(mif::GfgFgfFusionOptions{});
+    checkLargeStack(mif::GfgFgfFusionOptions{});
+    checkProgress(mif::GfgFgfFusionOptions{});
 
     // 保留帧位于原输入 1 和 4，中间插入无纹理帧，诊断不能错误返回压缩后的 0/1。
     const auto sharp = texture(129, 193);
     const auto stack = focusStack(sharp);
     const cv::Mat flat(sharp.size(), sharp.type(), cv::Scalar(80));
     const std::vector<cv::Mat> images{flat, stack[0], flat, flat, stack[1]};
-    mif::FusionOptions options;
-    options.method = mif::FusionMethod::Gfgfgf;
+    mif::GfgFgfFusionOptions options;
     // 全局筛帧属于可选扩展，论文默认比较所有焦面；此处显式启用筛帧来验证索引映射。
-    options.gfgfgf.selection_ratio = 0.15;
-    options.keep_weight_maps = true;
+    options.selection_ratio = 0.15;
+    options.include_weight_maps = true;
     const auto result = mif::fuse(images, options);
     checkDiagnostics(result, sharp.size(), images.size());
     for (int excluded : {0, 2, 3})
-        require(cv::norm(result.weights[excluded], cv::NORM_INF) == 0, "GFG-FGF restored a filtered-out frame's weights");
-    require(cv::countNonZero((result.focus_indices != 1) & (result.focus_indices != 4)) == 0,
+        require(cv::norm(result.weight_maps[excluded], cv::NORM_INF) == 0, "GFG-FGF restored a filtered-out frame's weights");
+    require(cv::countNonZero((result.source_index_map != 1) & (result.source_index_map != 4)) == 0,
             "GFG-FGF indices were not mapped back to original inputs");
-    require(cv::countNonZero(result.focus_indices == 1) > 0 && cv::countNonZero(result.focus_indices == 4) > 0,
+    require(cv::countNonZero(result.source_index_map == 1) > 0 && cv::countNonZero(result.source_index_map == 4) > 0,
             "GFG-FGF failed to use both complementary retained frames");
     require(mae(result.image, sharp) < std::min(mae(stack[0], sharp), mae(stack[1], sharp)) * 0.85,
             "GFG-FGF filtering lost complementary focused content");
@@ -239,30 +231,30 @@ void testGfgfgfFusion() {
     // 筛选比例 1 可以只留下唯一最清晰帧；只有一个候选仍必须正常融合并保持原索引。
     cv::Mat blurred;
     cv::GaussianBlur(sharp, blurred, {0, 0}, 3);
-    options.gfgfgf.selection_ratio = 1;
+    options.selection_ratio = 1;
     const auto single = mif::fuse({flat, blurred, sharp}, options);
-    require(cv::countNonZero(single.focus_indices != 2) == 0 &&
+    require(cv::countNonZero(single.source_index_map != 2) == 0 &&
             cv::norm(single.image, sharp, cv::NORM_INF) <= 1, "GFG-FGF mishandled its sole retained frame");
 
     // 高阈值应回退到均值残差，不能把全部聚焦信息置零后等权平均。
-    options.gfgfgf.selection_ratio = 0;
-    options.gfgfgf.difference_threshold = 1;
+    options.selection_ratio = 0;
+    options.gfg_threshold = 1;
     const auto residual = mif::fuse({flat, sharp}, options);
     checkDiagnostics(residual, sharp.size(), 2);
     require(mae(residual.image, sharp) < mae(flat, sharp) * 0.25,
             "GFG-FGF discarded the mean residual below the gradient threshold");
 
     const double nan = std::numeric_limits<double>::quiet_NaN();
-    for (const auto& invalidate : std::vector<std::function<void(mif::GfgfgfOptions&)>>{
-            [](auto& o) { o.difference_window = 2; }, [](auto& o) { o.difference_window = 257; },
+    for (const auto& invalidate : std::vector<std::function<void(mif::GfgFgfFusionOptions&)>>{
+            [](auto& o) { o.local_mean_window_size = 2; }, [](auto& o) { o.local_mean_window_size = 257; },
             [](auto& o) { o.selection_ratio = -0.1; }, [](auto& o) { o.selection_ratio = 1.1; },
-            [nan](auto& o) { o.selection_ratio = nan; }, [](auto& o) { o.difference_threshold = -0.1; },
-            [](auto& o) { o.difference_threshold = 1.1; }, [nan](auto& o) { o.difference_threshold = nan; },
+            [nan](auto& o) { o.selection_ratio = nan; }, [](auto& o) { o.gfg_threshold = -0.1; },
+            [](auto& o) { o.gfg_threshold = 1.1; }, [nan](auto& o) { o.gfg_threshold = nan; },
             [](auto& o) { o.guided_radius = 0; }, [](auto& o) { o.guided_radius = 256; },
-            [](auto& o) { o.guided_subsample = 0; }, [](auto& o) { o.guided_subsample = 17; },
+            [](auto& o) { o.guided_subsample_factor = 0; }, [](auto& o) { o.guided_subsample_factor = 17; },
             [](auto& o) { o.guided_epsilon = 0; }, [nan](auto& o) { o.guided_epsilon = nan; }}) {
-        options.gfgfgf = {};
-        invalidate(options.gfgfgf);
+        options = {};
+        invalidate(options);
         expectInvalid(images, options);
     }
 }

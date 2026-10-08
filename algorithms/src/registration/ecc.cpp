@@ -1,5 +1,5 @@
-#include "registration/registration.hpp"
-#include <mif/registration_options.hpp>
+#include "registration/registry.hpp"
+#include <mif/registration/ecc_registration_options.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/video/tracking.hpp>
 #include <cmath>
@@ -34,15 +34,27 @@ int motionType(MotionModel model) {
     }
 }
 
+/// 只校验 ECC 自身的模型和数值；工作图尺寸由公共入口检查。
+void validateEccOptions(const EccRegistrationOptions& options) {
+    motionType(options.motion_model);
+    if (options.max_iterations < 1 || options.max_iterations > 10000 ||
+        !std::isfinite(options.convergence_tolerance) || options.convergence_tolerance <= 0)
+        throw std::invalid_argument("Invalid ECC options; check iteration limit and convergence tolerance");
+}
+
 /// 缓存已平滑的参考图，每次为一张源图独立求解，避免上一张图的结果影响下一张。
 /// 返回矩阵采用参考坐标到源图坐标的方向，供公共管线反向采样。
 class EccEstimator final : public Estimator {
 public:
-    EccEstimator(const cv::Mat& reference_gray, const RegistrationOptions& options)
+    EccEstimator(const cv::Mat& reference_gray, const EccRegistrationOptions& options)
         : motion_(motionType(options.motion_model)),
           reference_(prepare(reference_gray, "reference")),
           criteria_(cv::TermCriteria::COUNT | cv::TermCriteria::EPS,
-                    options.iterations, options.epsilon) {}
+                    options.max_iterations, options.convergence_tolerance) {}
+
+    bool isProjective() const noexcept override {
+        return motion_ == cv::MOTION_HOMOGRAPHY;
+    }
 
     cv::Mat estimate(const cv::Mat& source_gray) override {
         // 参考图和源图均检查，避免让常量源图进入相关系数计算后出现无效数值。
@@ -81,10 +93,12 @@ private:
 
 } // 匿名命名空间
 
-/// 创建 ECC 估计器并立即检查参考图；参考图由平滑后的独立缓冲区持有。
-std::unique_ptr<Estimator> makeEccEstimator(const cv::Mat& reference_gray,
-                                             const RegistrationOptions& options) {
-    return std::make_unique<EccEstimator>(reference_gray, options);
+/// 校验器与工厂在同一实现中注册；每个任务创建并独立缓存已平滑的参考图。
+void registerEccRegistrationMethod() {
+    registerRegistrationMethod<EccRegistrationOptions>(validateEccOptions,
+        [](const cv::Mat& reference, const EccRegistrationOptions& options) -> std::unique_ptr<Estimator> {
+            return std::make_unique<EccEstimator>(reference, options);
+        });
 }
 
 } // 命名空间 mif::detail::registration

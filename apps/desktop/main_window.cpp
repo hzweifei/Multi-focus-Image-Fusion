@@ -4,8 +4,8 @@
 #include "widgets/fusion_settings.hpp"
 #include "widgets/registration_settings.hpp"
 #include "workers/fusion_worker.hpp"
-#include <mif/fusion_options.hpp>
-#include <mif/registration_options.hpp>
+#include <mif/fusion/options_base.hpp>
+#include <mif/registration/options_base.hpp>
 #include <QCloseEvent>
 #include <QCollator>
 #include <QCoreApplication>
@@ -323,13 +323,13 @@ void MainWindow::startFusion() {
         status_->setText(QStringLiteral("正在取消，将在当前处理步骤结束后停止…")); return;
     }
     if (files_->count() < 2) return;
-    // 配准和融合分别建立参数快照，后台线程只接收值，不读取界面控件。
-    const RegistrationOptions registration_options = registration_parameters_->options();
-    const FusionOptions fusion_options = fusion_parameters_->options();
+    // 面板只导出当前方法的具体配置；工作线程再克隆为只读快照，不读取界面控件。
+    const auto registration_options = registration_parameters_->options();
+    const auto fusion_options = fusion_parameters_->options();
     QStringList paths;
     for (int i = 0; i < files_->count(); ++i) paths.push_back(files_->item(i)->data(Qt::UserRole).toString());
     clearResult();
-    worker_ = new FusionWorker(paths, registration_options, fusion_options, this);
+    worker_ = new FusionWorker(paths, *registration_options, *fusion_options, this);
     // 信号从工作线程发出，Qt 将下面的接收回调排入界面线程执行。
     connect(worker_, &FusionWorker::progress, this, [this](int value, const QString& stage) {
         progress_->setValue(value);

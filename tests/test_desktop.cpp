@@ -5,10 +5,7 @@
 #include "widgets/fusion_settings.hpp"
 #include "widgets/registration_settings.hpp"
 #include "workers/fusion_worker.hpp"
-#include <mif/fusion_options.hpp>
-#include <mif/fusion.hpp>
-#include <mif/pipeline.hpp>
-#include <mif/registration_options.hpp>
+#include <mif/mif.hpp>
 #include <QApplication>
 #include <QComboBox>
 #include <QDir>
@@ -37,13 +34,58 @@
 #include <cmath>
 #include <functional>
 #include <iostream>
+#include <memory>
+#include <stdexcept>
 #include <vector>
 
 namespace {
+using mif::desktop::FusionMethod;
+using mif::desktop::RegistrationMethod;
+
+// 仅用于测试的界面状态：隐藏表单仍须保留数值；传入核心的始终是当前具体配置。
+struct FusionValues {
+    FusionMethod method = FusionMethod::GuidedFilter;
+    mif::GuidedFilterFusionOptions guided_filter;
+    mif::LaplacianPyramidFusionOptions laplacian_pyramid;
+    mif::BlockVarianceFusionOptions block_variance;
+    mif::DtcwtFusionOptions dtcwt;
+    mif::GfgFgfFusionOptions gfg_fgf;
+
+    const mif::FusionOptionsBase& selectedOptions() const {
+        switch (method) {
+        case FusionMethod::GuidedFilter: return guided_filter;
+        case FusionMethod::LaplacianPyramid: return laplacian_pyramid;
+        case FusionMethod::BlockVariance: return block_variance;
+        case FusionMethod::Dtcwt: return dtcwt;
+        case FusionMethod::GfgFgf: return gfg_fgf;
+        }
+        throw std::logic_error("Unknown fusion fixture selection");
+    }
+};
+
+struct RegistrationValues {
+    RegistrationMethod method = RegistrationMethod::None;
+    int max_working_dimension = mif::NoRegistrationOptions{}.max_working_dimension;
+    mif::EccRegistrationOptions ecc;
+    mif::SiftRegistrationOptions sift;
+
+    std::unique_ptr<mif::RegistrationOptionsBase> selectedOptions() const {
+        std::unique_ptr<mif::RegistrationOptionsBase> result;
+        switch (method) {
+        case RegistrationMethod::None: result = std::make_unique<mif::NoRegistrationOptions>(); break;
+        case RegistrationMethod::Ecc: result = ecc.clone(); break;
+        case RegistrationMethod::Sift: result = sift.clone(); break;
+        }
+        require(result != nullptr, "Unknown registration fixture selection");
+        result->max_working_dimension = max_working_dimension;
+        return result;
+    }
+};
+
 // 所有方法执行相同的配置切换、重置和端到端检查；数据读取始终依据枚举条目值。
-const std::array<mif::FusionMethod, 5> fusionMethods{
-    mif::FusionMethod::GuidedFilter, mif::FusionMethod::LaplacianPyramid,
-    mif::FusionMethod::Dct, mif::FusionMethod::Dtcwt, mif::FusionMethod::Gfgfgf};
+const std::array<FusionMethod, 5> fusionMethods{
+    FusionMethod::GuidedFilter, FusionMethod::LaplacianPyramid,
+    FusionMethod::BlockVariance, FusionMethod::Dtcwt, FusionMethod::GfgFgf};
 
 // 派发布局请求，确保切换参数页及模式后的可见性、滚动范围已更新。
 void flushLayout() {
@@ -59,12 +101,12 @@ struct RegistrationControls {
     mif::desktop::RegistrationSettings* settings;
     QComboBox* method;
     QComboBox* motion_model;
-    QSpinBox* max_size;
-    QSpinBox* iterations;
-    QDoubleSpinBox* epsilon;
+    QSpinBox* max_working_dimension;
+    QSpinBox* max_iterations;
+    QDoubleSpinBox* convergence_tolerance;
     QSpinBox* max_features;
-    QDoubleSpinBox* match_ratio;
-    QDoubleSpinBox* ransac_threshold;
+    QDoubleSpinBox* match_ratio_threshold;
+    QDoubleSpinBox* ransac_reprojection_threshold;
     QDoubleSpinBox* min_inlier_ratio;
     QPushButton* reset;
 
@@ -72,20 +114,20 @@ struct RegistrationControls {
         : settings(dynamic_cast<mif::desktop::RegistrationSettings*>(window.findChild<QGroupBox*>("registrationSettings"))),
           method(window.findChild<QComboBox*>("registrationMethod")),
           motion_model(window.findChild<QComboBox*>("registrationMotionModel")),
-          max_size(window.findChild<QSpinBox*>("registrationMaxSize")),
-          iterations(window.findChild<QSpinBox*>("registrationIterations")),
-          epsilon(window.findChild<QDoubleSpinBox*>("registrationEpsilon")),
+          max_working_dimension(window.findChild<QSpinBox*>("registrationMaxSize")),
+          max_iterations(window.findChild<QSpinBox*>("registrationIterations")),
+          convergence_tolerance(window.findChild<QDoubleSpinBox*>("registrationEpsilon")),
           max_features(window.findChild<QSpinBox*>("registrationMaxFeatures")),
-          match_ratio(window.findChild<QDoubleSpinBox*>("registrationMatchRatio")),
-          ransac_threshold(window.findChild<QDoubleSpinBox*>("registrationRansacThreshold")),
+          match_ratio_threshold(window.findChild<QDoubleSpinBox*>("registrationMatchRatio")),
+          ransac_reprojection_threshold(window.findChild<QDoubleSpinBox*>("registrationRansacThreshold")),
           min_inlier_ratio(window.findChild<QDoubleSpinBox*>("registrationMinInlierRatio")),
           reset(window.findChild<QPushButton*>("resetRegistrationOptions")) {
-        require(settings && method && motion_model && max_size && iterations && epsilon && max_features &&
-                match_ratio && ransac_threshold && min_inlier_ratio && reset,
+        require(settings && method && motion_model && max_working_dimension && max_iterations && convergence_tolerance && max_features &&
+                match_ratio_threshold && ransac_reprojection_threshold && min_inlier_ratio && reset,
                 "Registration parameter controls are missing");
     }
 
-    void selectMethod(mif::RegistrationMethod value) const {
+    void selectMethod(RegistrationMethod value) const {
         const int index = method->findData(static_cast<int>(value));
         require(index >= 0, "Registration method item data is missing");
         method->setCurrentIndex(index);
@@ -99,45 +141,64 @@ struct RegistrationControls {
         flushLayout();
     }
 
-    void setValues(const mif::RegistrationOptions& options) const {
-        selectMotionModel(options.motion_model);
-        max_size->setValue(options.max_size);
-        iterations->setValue(options.iterations);
-        epsilon->setValue(options.epsilon);
-        max_features->setValue(options.max_features);
-        match_ratio->setValue(options.match_ratio);
-        ransac_threshold->setValue(options.ransac_threshold);
-        min_inlier_ratio->setValue(options.min_inlier_ratio);
+    void setValues(const RegistrationValues& options) const {
+        selectMotionModel(options.ecc.motion_model);
+        max_working_dimension->setValue(options.max_working_dimension);
+        max_iterations->setValue(options.ecc.max_iterations);
+        convergence_tolerance->setValue(options.ecc.convergence_tolerance);
+        max_features->setValue(options.sift.max_features);
+        match_ratio_threshold->setValue(options.sift.match_ratio_threshold);
+        ransac_reprojection_threshold->setValue(options.sift.ransac_reprojection_threshold);
+        min_inlier_ratio->setValue(options.sift.min_inlier_ratio);
     }
 
-    void requireValues(const mif::RegistrationOptions& expected) const {
+    void requireValues(const RegistrationValues& expected) const {
         const auto actual = settings->options();
         auto close = [](double a, double b) { return std::abs(a - b) < 1e-12; };
-        require(actual.method == expected.method && actual.motion_model == expected.motion_model &&
-                actual.max_size == expected.max_size &&
-                actual.iterations == expected.iterations && close(actual.epsilon, expected.epsilon) &&
-                actual.max_features == expected.max_features && close(actual.match_ratio, expected.match_ratio) &&
-                close(actual.ransac_threshold, expected.ransac_threshold) &&
-                close(actual.min_inlier_ratio, expected.min_inlier_ratio),
-                "Registration options do not match the edited controls");
+        require(actual && actual->max_working_dimension == expected.max_working_dimension,
+                "Registration working dimension does not match the edited control");
+        switch (expected.method) {
+        case RegistrationMethod::None:
+            require(dynamic_cast<const mif::NoRegistrationOptions*>(actual.get()) != nullptr,
+                    "Disabled registration must export NoRegistrationOptions");
+            break;
+        case RegistrationMethod::Ecc: {
+            const auto* ecc = dynamic_cast<const mif::EccRegistrationOptions*>(actual.get());
+            require(ecc && ecc->motion_model == expected.ecc.motion_model &&
+                    ecc->max_iterations == expected.ecc.max_iterations &&
+                    close(ecc->convergence_tolerance, expected.ecc.convergence_tolerance),
+                    "ECC snapshot has the wrong type, motion model or parameters");
+            break;
+        }
+        case RegistrationMethod::Sift: {
+            const auto* sift = dynamic_cast<const mif::SiftRegistrationOptions*>(actual.get());
+            require(sift && sift->max_features == expected.sift.max_features &&
+                    close(sift->match_ratio_threshold, expected.sift.match_ratio_threshold) &&
+                    close(sift->ransac_reprojection_threshold, expected.sift.ransac_reprojection_threshold) &&
+                    close(sift->min_inlier_ratio, expected.sift.min_inlier_ratio),
+                    "SIFT snapshot has the wrong type or parameters");
+            break;
+        }
+        }
+        // 未显示的方法仍由控件保留，不要求将其参数塞进当前算法的快照。
         require(method->currentData().toInt() == static_cast<int>(expected.method) &&
-                motion_model->currentData().toInt() == static_cast<int>(expected.motion_model) &&
-                max_size->value() == expected.max_size && iterations->value() == expected.iterations &&
-                close(epsilon->value(), expected.epsilon) && max_features->value() == expected.max_features &&
-                close(match_ratio->value(), expected.match_ratio) &&
-                close(ransac_threshold->value(), expected.ransac_threshold) &&
-                close(min_inlier_ratio->value(), expected.min_inlier_ratio),
+                motion_model->currentData().toInt() == static_cast<int>(expected.ecc.motion_model) &&
+                max_working_dimension->value() == expected.max_working_dimension && max_iterations->value() == expected.ecc.max_iterations &&
+                close(convergence_tolerance->value(), expected.ecc.convergence_tolerance) && max_features->value() == expected.sift.max_features &&
+                close(match_ratio_threshold->value(), expected.sift.match_ratio_threshold) &&
+                close(ransac_reprojection_threshold->value(), expected.sift.ransac_reprojection_threshold) &&
+                close(min_inlier_ratio->value(), expected.sift.min_inlier_ratio),
                 "Registration controls lost their selected values");
     }
 
-    void requireVisibility(mif::RegistrationMethod value) const {
-        const bool sift = value == mif::RegistrationMethod::Sift;
-        const bool active = value != mif::RegistrationMethod::None;
-        const bool ecc = value == mif::RegistrationMethod::Ecc;
-        require(motion_model->isVisibleTo(settings) == ecc && max_size->isVisibleTo(settings) == active &&
-                iterations->isVisibleTo(settings) == ecc &&
-                epsilon->isVisibleTo(settings) == ecc && max_features->isVisibleTo(settings) == sift &&
-                match_ratio->isVisibleTo(settings) == sift && ransac_threshold->isVisibleTo(settings) == sift &&
+    void requireVisibility(RegistrationMethod value) const {
+        const bool sift = value == RegistrationMethod::Sift;
+        const bool active = value != RegistrationMethod::None;
+        const bool ecc = value == RegistrationMethod::Ecc;
+        require(motion_model->isVisibleTo(settings) == ecc && max_working_dimension->isVisibleTo(settings) == active &&
+                max_iterations->isVisibleTo(settings) == ecc &&
+                convergence_tolerance->isVisibleTo(settings) == ecc && max_features->isVisibleTo(settings) == sift &&
+                match_ratio_threshold->isVisibleTo(settings) == sift && ransac_reprojection_threshold->isVisibleTo(settings) == sift &&
                 min_inlier_ratio->isVisibleTo(settings) == sift,
                 "Registration mode shows unrelated parameters or hides required parameters");
     }
@@ -148,9 +209,9 @@ struct FusionControls {
     struct MethodFields {
         QWidget* panel;
         QComboBox* focus;
-        QSpinBox* window;
-        QSpinBox* radius;
-        QDoubleSpinBox* epsilon;
+        QSpinBox* window_size;
+        QSpinBox* detail_radius;
+        QDoubleSpinBox* detail_epsilon;
     };
     mif::desktop::FusionSettings* settings;
     QComboBox* method;
@@ -158,20 +219,20 @@ struct FusionControls {
     MethodFields pyramid;
     QSpinBox* base_radius;
     QDoubleSpinBox* base_epsilon;
-    QSpinBox* levels;
-    QWidget* dct_panel;
+    QSpinBox* max_levels;
+    QWidget* block_variance_panel;
     QWidget* dtcwt_panel;
-    QWidget* gfgfgf_panel;
-    QSpinBox* dct_block_size;
-    QSpinBox* dct_window;
-    QSpinBox* dtcwt_levels;
-    QSpinBox* dtcwt_window;
-    QSpinBox* gfgfgf_window;
-    QDoubleSpinBox* gfgfgf_selection;
-    QDoubleSpinBox* gfgfgf_threshold;
-    QSpinBox* gfgfgf_radius;
-    QDoubleSpinBox* gfgfgf_epsilon;
-    QSpinBox* gfgfgf_subsample;
+    QWidget* gfg_fgf_panel;
+    QSpinBox* block_variance_block_size;
+    QSpinBox* block_variance_consistency_window_size;
+    QSpinBox* dtcwt_max_levels;
+    QSpinBox* dtcwt_activity_window_size;
+    QSpinBox* gfg_fgf_local_mean_window_size;
+    QDoubleSpinBox* gfg_fgf_selection_ratio;
+    QDoubleSpinBox* gfg_fgf_threshold;
+    QSpinBox* gfg_fgf_guided_radius;
+    QDoubleSpinBox* gfg_fgf_guided_epsilon;
+    QSpinBox* gfg_fgf_guided_subsample_factor;
     QPushButton* reset;
 
     static MethodFields findFields(QWidget& parent, const QString& prefix, const QString& panel_name) {
@@ -180,7 +241,7 @@ struct FusionControls {
             parent.findChild<QSpinBox*>(prefix + "FocusWindow"),
             parent.findChild<QSpinBox*>(prefix + "DetailRadius"),
             parent.findChild<QDoubleSpinBox*>(prefix + "DetailEpsilon")};
-        require(result.panel && result.focus && result.window && result.radius && result.epsilon,
+        require(result.panel && result.focus && result.window_size && result.detail_radius && result.detail_epsilon,
                 "Method-specific fusion fields are missing");
         return result;
     }
@@ -192,42 +253,42 @@ struct FusionControls {
           pyramid(findFields(window, "pyramid", "laplacianPyramidFields")),
           base_radius(window.findChild<QSpinBox*>("guidedBaseRadius")),
           base_epsilon(window.findChild<QDoubleSpinBox*>("guidedBaseEpsilon")),
-          levels(window.findChild<QSpinBox*>("pyramidLevels")),
-          dct_panel(window.findChild<QWidget*>("dctFields")),
+          max_levels(window.findChild<QSpinBox*>("pyramidLevels")),
+          block_variance_panel(window.findChild<QWidget*>("dctFields")),
           dtcwt_panel(window.findChild<QWidget*>("dtcwtFields")),
-          gfgfgf_panel(window.findChild<QWidget*>("gfgfgfFields")),
-          dct_block_size(window.findChild<QSpinBox*>("dctBlockSize")),
-          dct_window(window.findChild<QSpinBox*>("dctConsistencyWindow")),
-          dtcwt_levels(window.findChild<QSpinBox*>("dtcwtLevels")),
-          dtcwt_window(window.findChild<QSpinBox*>("dtcwtActivityWindow")),
-          gfgfgf_window(window.findChild<QSpinBox*>("gfgfgfDifferenceWindow")),
-          gfgfgf_selection(window.findChild<QDoubleSpinBox*>("gfgfgfSelectionRatio")),
-          gfgfgf_threshold(window.findChild<QDoubleSpinBox*>("gfgfgfDifferenceThreshold")),
-          gfgfgf_radius(window.findChild<QSpinBox*>("gfgfgfGuidedRadius")),
-          gfgfgf_epsilon(window.findChild<QDoubleSpinBox*>("gfgfgfGuidedEpsilon")),
-          gfgfgf_subsample(window.findChild<QSpinBox*>("gfgfgfGuidedSubsample")),
+          gfg_fgf_panel(window.findChild<QWidget*>("gfgfgfFields")),
+          block_variance_block_size(window.findChild<QSpinBox*>("dctBlockSize")),
+          block_variance_consistency_window_size(window.findChild<QSpinBox*>("dctConsistencyWindow")),
+          dtcwt_max_levels(window.findChild<QSpinBox*>("dtcwtLevels")),
+          dtcwt_activity_window_size(window.findChild<QSpinBox*>("dtcwtActivityWindow")),
+          gfg_fgf_local_mean_window_size(window.findChild<QSpinBox*>("gfgfgfDifferenceWindow")),
+          gfg_fgf_selection_ratio(window.findChild<QDoubleSpinBox*>("gfgfgfSelectionRatio")),
+          gfg_fgf_threshold(window.findChild<QDoubleSpinBox*>("gfgfgfDifferenceThreshold")),
+          gfg_fgf_guided_radius(window.findChild<QSpinBox*>("gfgfgfGuidedRadius")),
+          gfg_fgf_guided_epsilon(window.findChild<QDoubleSpinBox*>("gfgfgfGuidedEpsilon")),
+          gfg_fgf_guided_subsample_factor(window.findChild<QSpinBox*>("gfgfgfGuidedSubsample")),
           reset(window.findChild<QPushButton*>("resetFusionOptions")) {
-        require(settings && method && base_radius && base_epsilon && levels && reset,
+        require(settings && method && base_radius && base_epsilon && max_levels && reset,
                 "Fusion settings controls are missing");
-        require(dct_panel && dtcwt_panel && gfgfgf_panel && dct_block_size && dct_window &&
-                dtcwt_levels && dtcwt_window && gfgfgf_window && gfgfgf_selection &&
-                gfgfgf_threshold && gfgfgf_radius && gfgfgf_epsilon && gfgfgf_subsample,
+        require(block_variance_panel && dtcwt_panel && gfg_fgf_panel && block_variance_block_size && block_variance_consistency_window_size &&
+                dtcwt_max_levels && dtcwt_activity_window_size && gfg_fgf_local_mean_window_size && gfg_fgf_selection_ratio &&
+                gfg_fgf_threshold && gfg_fgf_guided_radius && gfg_fgf_guided_epsilon && gfg_fgf_guided_subsample_factor,
                 "New fusion method panels or parameters are missing");
     }
 
-    void selectMethod(mif::FusionMethod value) const {
+    void selectMethod(FusionMethod value) const {
         const int index = method->findData(static_cast<int>(value));
         require(index >= 0, "Fusion method item data is missing");
         method->setCurrentIndex(index);
         flushLayout();
     }
 
-    void setValues(const mif::FusionOptions& options) const {
-        auto setCommon = [](const MethodFields& fields, const mif::FocusOptions& focus, int radius, double epsilon) {
+    void setValues(const FusionValues& options) const {
+        auto setCommon = [](const MethodFields& fields, const mif::FocusMeasureOptions& focus, int radius, double epsilon) {
             fields.focus->setCurrentIndex(fields.focus->findData(static_cast<int>(focus.measure)));
-            fields.window->setValue(focus.window);
-            fields.radius->setValue(radius);
-            fields.epsilon->setValue(epsilon);
+            fields.window_size->setValue(focus.window_size);
+            fields.detail_radius->setValue(radius);
+            fields.detail_epsilon->setValue(epsilon);
         };
         const auto& g = options.guided_filter;
         const auto& p = options.laplacian_pyramid;
@@ -235,104 +296,149 @@ struct FusionControls {
         base_radius->setValue(g.base_radius);
         base_epsilon->setValue(g.base_epsilon);
         setCommon(pyramid, p.focus, p.detail_radius, p.detail_epsilon);
-        levels->setValue(p.levels);
-        dct_block_size->setValue(options.dct.block_size);
-        dct_window->setValue(options.dct.consistency_window);
-        dtcwt_levels->setValue(options.dtcwt.levels);
-        dtcwt_window->setValue(options.dtcwt.activity_window);
-        gfgfgf_window->setValue(options.gfgfgf.difference_window);
-        gfgfgf_selection->setValue(options.gfgfgf.selection_ratio);
-        gfgfgf_threshold->setValue(options.gfgfgf.difference_threshold);
-        gfgfgf_radius->setValue(options.gfgfgf.guided_radius);
-        gfgfgf_epsilon->setValue(options.gfgfgf.guided_epsilon);
-        gfgfgf_subsample->setValue(options.gfgfgf.guided_subsample);
+        max_levels->setValue(p.max_levels);
+        block_variance_block_size->setValue(options.block_variance.block_size);
+        block_variance_consistency_window_size->setValue(options.block_variance.consistency_window_size);
+        dtcwt_max_levels->setValue(options.dtcwt.max_levels);
+        dtcwt_activity_window_size->setValue(options.dtcwt.activity_window_size);
+        gfg_fgf_local_mean_window_size->setValue(options.gfg_fgf.local_mean_window_size);
+        gfg_fgf_selection_ratio->setValue(options.gfg_fgf.selection_ratio);
+        gfg_fgf_threshold->setValue(options.gfg_fgf.gfg_threshold);
+        gfg_fgf_guided_radius->setValue(options.gfg_fgf.guided_radius);
+        gfg_fgf_guided_epsilon->setValue(options.gfg_fgf.guided_epsilon);
+        gfg_fgf_guided_subsample_factor->setValue(options.gfg_fgf.guided_subsample_factor);
         selectMethod(options.method);
     }
 
-    void requireValues(const mif::FusionOptions& expected) const {
+    void requireValues(const FusionValues& expected) const {
         const auto actual = settings->options();
         auto close = [](double a, double b) { return std::abs(a - b) < 1e-12; };
-        const auto& ag = actual.guided_filter;
         const auto& eg = expected.guided_filter;
-        const auto& ap = actual.laplacian_pyramid;
         const auto& ep = expected.laplacian_pyramid;
-        require(actual.method == expected.method && !actual.keep_weight_maps &&
-                ag.focus.measure == eg.focus.measure && ag.focus.window == eg.focus.window &&
-                ag.base_radius == eg.base_radius && close(ag.base_epsilon, eg.base_epsilon) &&
-                ag.detail_radius == eg.detail_radius && close(ag.detail_epsilon, eg.detail_epsilon) &&
-                ap.focus.measure == ep.focus.measure && ap.focus.window == ep.focus.window &&
-                ap.detail_radius == ep.detail_radius && close(ap.detail_epsilon, ep.detail_epsilon) &&
-                ap.levels == ep.levels && actual.dct.block_size == expected.dct.block_size &&
-                actual.dct.consistency_window == expected.dct.consistency_window &&
-                actual.dtcwt.levels == expected.dtcwt.levels &&
-                actual.dtcwt.activity_window == expected.dtcwt.activity_window &&
-                actual.gfgfgf.difference_window == expected.gfgfgf.difference_window &&
-                close(actual.gfgfgf.selection_ratio, expected.gfgfgf.selection_ratio) &&
-                close(actual.gfgfgf.difference_threshold, expected.gfgfgf.difference_threshold) &&
-                actual.gfgfgf.guided_radius == expected.gfgfgf.guided_radius &&
-                close(actual.gfgfgf.guided_epsilon, expected.gfgfgf.guided_epsilon) &&
-                actual.gfgfgf.guided_subsample == expected.gfgfgf.guided_subsample,
-                "Fusion method configurations were mixed, reset or omitted");
+        require(actual && !actual->include_weight_maps, "Desktop fusion snapshot must omit weight maps");
+        switch (expected.method) {
+        case FusionMethod::GuidedFilter: {
+            const auto* value = dynamic_cast<const mif::GuidedFilterFusionOptions*>(actual.get());
+            require(value && value->focus.measure == eg.focus.measure && value->focus.window_size == eg.focus.window_size &&
+                    value->base_radius == eg.base_radius && close(value->base_epsilon, eg.base_epsilon) &&
+                    value->detail_radius == eg.detail_radius && close(value->detail_epsilon, eg.detail_epsilon),
+                    "Guided filter snapshot has the wrong type or parameters");
+            break;
+        }
+        case FusionMethod::LaplacianPyramid: {
+            const auto* value = dynamic_cast<const mif::LaplacianPyramidFusionOptions*>(actual.get());
+            require(value && value->focus.measure == ep.focus.measure && value->focus.window_size == ep.focus.window_size &&
+                    value->detail_radius == ep.detail_radius && close(value->detail_epsilon, ep.detail_epsilon) &&
+                    value->max_levels == ep.max_levels, "Pyramid snapshot has the wrong type or parameters");
+            break;
+        }
+        case FusionMethod::BlockVariance: {
+            const auto* value = dynamic_cast<const mif::BlockVarianceFusionOptions*>(actual.get());
+            require(value && value->block_size == expected.block_variance.block_size &&
+                    value->consistency_window_size == expected.block_variance.consistency_window_size,
+                    "Block variance snapshot has the wrong type or parameters");
+            break;
+        }
+        case FusionMethod::Dtcwt: {
+            const auto* value = dynamic_cast<const mif::DtcwtFusionOptions*>(actual.get());
+            require(value && value->max_levels == expected.dtcwt.max_levels &&
+                    value->activity_window_size == expected.dtcwt.activity_window_size,
+                    "DTCWT snapshot has the wrong type or parameters");
+            break;
+        }
+        case FusionMethod::GfgFgf: {
+            const auto* value = dynamic_cast<const mif::GfgFgfFusionOptions*>(actual.get());
+            require(value && value->local_mean_window_size == expected.gfg_fgf.local_mean_window_size &&
+                    close(value->selection_ratio, expected.gfg_fgf.selection_ratio) &&
+                    close(value->gfg_threshold, expected.gfg_fgf.gfg_threshold) &&
+                    value->guided_radius == expected.gfg_fgf.guided_radius &&
+                    close(value->guided_epsilon, expected.gfg_fgf.guided_epsilon) &&
+                    value->guided_subsample_factor == expected.gfg_fgf.guided_subsample_factor,
+                    "GFG-FGF snapshot has the wrong type or parameters");
+            break;
+        }
+        }
+        auto checkCommon = [&](const MethodFields& fields, const mif::FocusMeasureOptions& focus,
+                               int radius, double epsilon) {
+            require(fields.focus->currentData().toInt() == static_cast<int>(focus.measure) &&
+                    fields.window_size->value() == focus.window_size && fields.detail_radius->value() == radius &&
+                    close(fields.detail_epsilon->value(), epsilon), "Hidden fusion controls lost their values");
+        };
+        checkCommon(guided, eg.focus, eg.detail_radius, eg.detail_epsilon);
+        checkCommon(pyramid, ep.focus, ep.detail_radius, ep.detail_epsilon);
+        require(method->currentData().toInt() == static_cast<int>(expected.method) &&
+                base_radius->value() == eg.base_radius && close(base_epsilon->value(), eg.base_epsilon) &&
+                max_levels->value() == ep.max_levels && block_variance_block_size->value() == expected.block_variance.block_size &&
+                block_variance_consistency_window_size->value() == expected.block_variance.consistency_window_size &&
+                dtcwt_max_levels->value() == expected.dtcwt.max_levels &&
+                dtcwt_activity_window_size->value() == expected.dtcwt.activity_window_size &&
+                gfg_fgf_local_mean_window_size->value() == expected.gfg_fgf.local_mean_window_size &&
+                close(gfg_fgf_selection_ratio->value(), expected.gfg_fgf.selection_ratio) &&
+                close(gfg_fgf_threshold->value(), expected.gfg_fgf.gfg_threshold) &&
+                gfg_fgf_guided_radius->value() == expected.gfg_fgf.guided_radius &&
+                close(gfg_fgf_guided_epsilon->value(), expected.gfg_fgf.guided_epsilon) &&
+                gfg_fgf_guided_subsample_factor->value() == expected.gfg_fgf.guided_subsample_factor,
+                "Fusion controls mixed or reset independent method configurations");
     }
 
-    void requireVisibility(mif::FusionMethod value) const {
-        require(guided.panel->isVisibleTo(settings) == (value == mif::FusionMethod::GuidedFilter) &&
-                pyramid.panel->isVisibleTo(settings) == (value == mif::FusionMethod::LaplacianPyramid) &&
-                dct_panel->isVisibleTo(settings) == (value == mif::FusionMethod::Dct) &&
-                dtcwt_panel->isVisibleTo(settings) == (value == mif::FusionMethod::Dtcwt) &&
-                gfgfgf_panel->isVisibleTo(settings) == (value == mif::FusionMethod::Gfgfgf),
+    void requireVisibility(FusionMethod value) const {
+        require(guided.panel->isVisibleTo(settings) == (value == FusionMethod::GuidedFilter) &&
+                pyramid.panel->isVisibleTo(settings) == (value == FusionMethod::LaplacianPyramid) &&
+                block_variance_panel->isVisibleTo(settings) == (value == FusionMethod::BlockVariance) &&
+                dtcwt_panel->isVisibleTo(settings) == (value == FusionMethod::Dtcwt) &&
+                gfg_fgf_panel->isVisibleTo(settings) == (value == FusionMethod::GfgFgf),
                 "Fusion settings must show only the selected method's fields");
     }
 
     std::vector<QWidget*> inputs() const {
-        return {method, guided.focus, guided.window, guided.radius, guided.epsilon, base_radius, base_epsilon,
-                pyramid.focus, pyramid.window, pyramid.radius, pyramid.epsilon, levels,
-                dct_block_size, dct_window, dtcwt_levels, dtcwt_window, gfgfgf_window,
-                gfgfgf_selection, gfgfgf_threshold, gfgfgf_radius, gfgfgf_epsilon, gfgfgf_subsample};
+        return {method, guided.focus, guided.window_size, guided.detail_radius, guided.detail_epsilon, base_radius, base_epsilon,
+                pyramid.focus, pyramid.window_size, pyramid.detail_radius, pyramid.detail_epsilon, max_levels,
+                block_variance_block_size, block_variance_consistency_window_size, dtcwt_max_levels, dtcwt_activity_window_size, gfg_fgf_local_mean_window_size,
+                gfg_fgf_selection_ratio, gfg_fgf_threshold, gfg_fgf_guided_radius, gfg_fgf_guided_epsilon, gfg_fgf_guided_subsample_factor};
     }
 };
 
 // 各方法均使用非默认配置；原有两种方法还采用不同清晰度指标，便于发现配置串用。
-mif::FusionOptions customFusionOptions() {
-    mif::FusionOptions options;
+FusionValues customFusionValues() {
+    FusionValues options;
     auto& guided = options.guided_filter;
     guided.focus.measure = mif::FocusMeasure::Tenengrad;
-    guided.focus.window = 7;
+    guided.focus.window_size = 7;
     guided.base_radius = 9;
     guided.base_epsilon = 0.02;
     guided.detail_radius = 2;
     guided.detail_epsilon = 0.0003;
     auto& pyramid = options.laplacian_pyramid;
     pyramid.focus.measure = mif::FocusMeasure::ModifiedLaplacian;
-    pyramid.focus.window = 13;
+    pyramid.focus.window_size = 13;
     pyramid.detail_radius = 5;
     pyramid.detail_epsilon = 0.0008;
-    pyramid.levels = 3;
-    options.dct.block_size = 12;
-    options.dct.consistency_window = 3;
-    options.dtcwt.levels = 3;
-    options.dtcwt.activity_window = 5;
-    options.gfgfgf.difference_window = 9;
-    options.gfgfgf.selection_ratio = 0.22;
-    options.gfgfgf.difference_threshold = 0.012;
-    options.gfgfgf.guided_radius = 4;
-    options.gfgfgf.guided_epsilon = 0.2;
-    options.gfgfgf.guided_subsample = 2;
+    pyramid.max_levels = 3;
+    options.block_variance.block_size = 12;
+    options.block_variance.consistency_window_size = 3;
+    options.dtcwt.max_levels = 3;
+    options.dtcwt.activity_window_size = 5;
+    options.gfg_fgf.local_mean_window_size = 9;
+    options.gfg_fgf.selection_ratio = 0.22;
+    options.gfg_fgf.gfg_threshold = 0.012;
+    options.gfg_fgf.guided_radius = 4;
+    options.gfg_fgf.guided_epsilon = 0.2;
+    options.gfg_fgf.guided_subsample_factor = 2;
     return options;
 }
 
 // 所有字段都偏离默认值，最长边还会触发缩小，真实计算可发现主窗口漏传参数。
-mif::RegistrationOptions customRegistrationOptions(mif::RegistrationMethod method, mif::MotionModel model) {
-    mif::RegistrationOptions options;
+RegistrationValues customRegistrationValues(RegistrationMethod method, mif::MotionModel model) {
+    RegistrationValues options;
     options.method = method;
-    options.motion_model = model;
-    options.max_size = 256;
-    options.iterations = 90;
-    options.epsilon = 0.00002;
-    options.max_features = 1200;
-    options.match_ratio = 0.82;
-    options.ransac_threshold = 2.25;
-    options.min_inlier_ratio = 0.35;
+    options.ecc.motion_model = model;
+    options.max_working_dimension = 256;
+    options.ecc.max_iterations = 90;
+    options.ecc.convergence_tolerance = 0.00002;
+    options.sift.max_features = 1200;
+    options.sift.match_ratio_threshold = 0.82;
+    options.sift.ransac_reprojection_threshold = 2.25;
+    options.sift.min_inlier_ratio = 0.35;
     return options;
 }
 
@@ -528,19 +634,19 @@ void verifyRegistrationSettings() {
             "Each parameter page needs a scroll area, with the run button outside both");
     tabs->setCurrentIndex(0);
     flushLayout();
-    controls.requireValues(mif::RegistrationOptions{});
+    controls.requireValues(RegistrationValues{});
     require(controls.method->count() == 3 && controls.motion_model->count() == 3,
             "Registration methods and motion models need separate three-item selectors");
-    for (const auto method : {mif::RegistrationMethod::None, mif::RegistrationMethod::Ecc,
-                              mif::RegistrationMethod::Sift})
+    for (const auto method : {RegistrationMethod::None, RegistrationMethod::Ecc,
+                              RegistrationMethod::Sift})
         require(controls.method->findData(static_cast<int>(method)) >= 0,
                 "Registration method item data is missing");
     for (const auto model : {mif::MotionModel::Translation, mif::MotionModel::Affine,
                              mif::MotionModel::Homography})
         require(controls.motion_model->findData(static_cast<int>(model)) >= 0,
                 "Motion model item data is missing");
-    require(controls.max_size->minimum() == 16 && controls.max_size->maximum() == 8192 &&
-            controls.iterations->minimum() == 1 && controls.iterations->maximum() == 10000 &&
+    require(controls.max_working_dimension->minimum() == 16 && controls.max_working_dimension->maximum() == 8192 &&
+            controls.max_iterations->minimum() == 1 && controls.max_iterations->maximum() == 10000 &&
             controls.max_features->minimum() == 64 && controls.max_features->maximum() == 100000,
             "Integer registration controls have incorrect supported ranges");
     auto requireDoubleRange = [](QDoubleSpinBox* box, double minimum, double maximum, int decimals) {
@@ -548,31 +654,31 @@ void verifyRegistrationSettings() {
                 std::abs(box->maximum() - maximum) < 1e-12 && box->decimals() == decimals,
                 "Floating-point registration control has an incorrect range or display precision");
     };
-    requireDoubleRange(controls.epsilon, 1e-8, 1.0, 8);
-    requireDoubleRange(controls.match_ratio, 0.01, 0.99, 2);
-    requireDoubleRange(controls.ransac_threshold, 0.01, 1000.0, 2);
+    requireDoubleRange(controls.convergence_tolerance, 1e-8, 1.0, 8);
+    requireDoubleRange(controls.match_ratio_threshold, 0.01, 0.99, 2);
+    requireDoubleRange(controls.ransac_reprojection_threshold, 0.01, 1000.0, 2);
     requireDoubleRange(controls.min_inlier_ratio, 0.01, 1.0, 2);
-    require(std::abs(controls.epsilon->singleStep() - 1e-5) < 1e-12,
+    require(std::abs(controls.convergence_tolerance->singleStep() - 1e-5) < 1e-12,
             "ECC epsilon control has an incorrect step");
 
-    auto edited = customRegistrationOptions(mif::RegistrationMethod::None, mif::MotionModel::Translation);
+    auto edited = customRegistrationValues(RegistrationMethod::None, mif::MotionModel::Translation);
     controls.setValues(edited);
     // 三种模型分别经历 ECC → SIFT → 关闭 → ECC，隐藏期间仍需保留所选模型与数值。
     for (const auto model : {mif::MotionModel::Translation, mif::MotionModel::Affine,
                              mif::MotionModel::Homography}) {
-        controls.selectMethod(mif::RegistrationMethod::Ecc);
+        controls.selectMethod(RegistrationMethod::Ecc);
         controls.selectMotionModel(model);
-        edited.motion_model = model;
-        for (const auto method : {mif::RegistrationMethod::Ecc, mif::RegistrationMethod::Sift,
-                                  mif::RegistrationMethod::None, mif::RegistrationMethod::Ecc}) {
+        edited.ecc.motion_model = model;
+        for (const auto method : {RegistrationMethod::Ecc, RegistrationMethod::Sift,
+                                  RegistrationMethod::None, RegistrationMethod::Ecc}) {
             controls.selectMethod(method);
             edited.method = method;
             controls.requireVisibility(method);
             controls.requireValues(edited);
             // 将滚轮发送给有键盘焦点的真实控件，算法、模型和数值均不能误改。
             for (QWidget* widget : std::vector<QWidget*>{controls.method, controls.motion_model,
-                    controls.max_size, controls.iterations, controls.epsilon, controls.max_features,
-                    controls.match_ratio, controls.ransac_threshold, controls.min_inlier_ratio}) {
+                    controls.max_working_dimension, controls.max_iterations, controls.convergence_tolerance, controls.max_features,
+                    controls.match_ratio_threshold, controls.ransac_reprojection_threshold, controls.min_inlier_ratio}) {
                 if (!widget->isVisibleTo(controls.settings)) continue;
                 widget->setFocus();
                 const QPoint point = widget->rect().center();
@@ -592,25 +698,25 @@ void verifyRegistrationSettings() {
     }
 
     // 所有算法下恢复默认都覆盖隐藏数值，但保留算法及模型；切回 ECC 时模型仍可见。
-    for (const auto method : {mif::RegistrationMethod::Ecc, mif::RegistrationMethod::Sift,
-                              mif::RegistrationMethod::None}) {
+    for (const auto method : {RegistrationMethod::Ecc, RegistrationMethod::Sift,
+                              RegistrationMethod::None}) {
         controls.selectMethod(method);
-        edited = customRegistrationOptions(method, mif::MotionModel::Homography);
+        edited = customRegistrationValues(method, mif::MotionModel::Homography);
         controls.setValues(edited);
         controls.reset->click();
-        mif::RegistrationOptions defaults;
+        RegistrationValues defaults;
         defaults.method = method;
-        defaults.motion_model = mif::MotionModel::Homography;
+        defaults.ecc.motion_model = mif::MotionModel::Homography;
         controls.requireValues(defaults);
         controls.requireVisibility(method);
-        controls.selectMethod(mif::RegistrationMethod::Ecc);
-        defaults.method = mif::RegistrationMethod::Ecc;
+        controls.selectMethod(RegistrationMethod::Ecc);
+        defaults.method = RegistrationMethod::Ecc;
         controls.requireValues(defaults);
         controls.requireVisibility(defaults.method);
     }
 
     // 压缩可用高度产生真实滚动范围；不依赖字体和平台对应的精确像素尺寸。
-    controls.selectMethod(mif::RegistrationMethod::Sift);
+    controls.selectMethod(RegistrationMethod::Sift);
     window.resize(window.minimumSize());
     tabs->setMaximumHeight(160);
     flushLayout();
@@ -636,20 +742,20 @@ void verifyFusionSettings() {
             "Fusion settings must be hosted in their parameter page");
     tabs->setCurrentIndex(1);
     flushLayout();
-    controls.requireValues(mif::FusionOptions{});
+    controls.requireValues(FusionValues{});
     require(controls.method->count() == static_cast<int>(fusionMethods.size()) && controls.guided.focus != controls.pyramid.focus &&
-            controls.guided.window != controls.pyramid.window && controls.guided.radius != controls.pyramid.radius &&
-            controls.guided.epsilon != controls.pyramid.epsilon,
+            controls.guided.window_size != controls.pyramid.window_size && controls.guided.detail_radius != controls.pyramid.detail_radius &&
+            controls.guided.detail_epsilon != controls.pyramid.detail_epsilon,
             "Fusion methods must own independent parameter controls");
     for (const auto& fields : {controls.guided, controls.pyramid}) {
-        require(fields.window->minimum() == 1 && fields.window->maximum() == 255 &&
-                fields.window->singleStep() == 2 && fields.radius->minimum() == 1 && fields.radius->maximum() == 255,
+        require(fields.window_size->minimum() == 1 && fields.window_size->maximum() == 255 &&
+                fields.window_size->singleStep() == 2 && fields.detail_radius->minimum() == 1 && fields.detail_radius->maximum() == 255,
                 "Fusion window and radius ranges differ from the supported ranges");
         require(fields.focus->count() == 2, "Fusion focus controls are incomplete");
     }
     // 融合正则项共享官方引导滤波的数值下限；ECC 收敛阈值仍独立保持 1e-8。
-    for (auto* epsilon : {controls.guided.epsilon, controls.base_epsilon,
-                          controls.pyramid.epsilon, controls.gfgfgf_epsilon}) {
+    for (auto* epsilon : {controls.guided.detail_epsilon, controls.base_epsilon,
+                          controls.pyramid.detail_epsilon, controls.gfg_fgf_guided_epsilon}) {
         require(std::abs(epsilon->minimum() - 1e-6) < 1e-12 &&
                 epsilon->maximum() == 1.0 && epsilon->decimals() == 8,
                 "Fusion regularization control has an incorrect safe range or precision");
@@ -658,21 +764,21 @@ void verifyFusionSettings() {
                 "Fusion regularization control accepted a value below the numerical safety limit");
     }
     require(controls.base_radius->minimum() == 1 && controls.base_radius->maximum() == 255 &&
-            controls.levels->minimum() == 1 && controls.levels->maximum() == 16,
+            controls.max_levels->minimum() == 1 && controls.max_levels->maximum() == 16,
             "Method-specific fusion ranges are incorrect");
-    require(controls.dct_block_size->minimum() == 2 && controls.dct_block_size->maximum() == 128 &&
-            controls.dct_window->minimum() == 1 && controls.dct_window->maximum() == 31 &&
-            controls.dtcwt_levels->minimum() == 1 && controls.dtcwt_levels->maximum() == 16 &&
-            controls.dtcwt_window->minimum() == 1 && controls.dtcwt_window->maximum() == 31 &&
-            controls.gfgfgf_window->minimum() == 1 && controls.gfgfgf_window->maximum() == 255 &&
-            controls.gfgfgf_radius->minimum() == 1 && controls.gfgfgf_radius->maximum() == 255 &&
-            controls.gfgfgf_subsample->minimum() == 1 && controls.gfgfgf_subsample->maximum() == 16,
+    require(controls.block_variance_block_size->minimum() == 2 && controls.block_variance_block_size->maximum() == 128 &&
+            controls.block_variance_consistency_window_size->minimum() == 1 && controls.block_variance_consistency_window_size->maximum() == 31 &&
+            controls.dtcwt_max_levels->minimum() == 1 && controls.dtcwt_max_levels->maximum() == 16 &&
+            controls.dtcwt_activity_window_size->minimum() == 1 && controls.dtcwt_activity_window_size->maximum() == 31 &&
+            controls.gfg_fgf_local_mean_window_size->minimum() == 1 && controls.gfg_fgf_local_mean_window_size->maximum() == 255 &&
+            controls.gfg_fgf_guided_radius->minimum() == 1 && controls.gfg_fgf_guided_radius->maximum() == 255 &&
+            controls.gfg_fgf_guided_subsample_factor->minimum() == 1 && controls.gfg_fgf_guided_subsample_factor->maximum() == 16,
             "New fusion method integer ranges are incorrect");
-    require(controls.gfgfgf_selection->minimum() == 0 && controls.gfgfgf_selection->maximum() == 1 &&
-            controls.gfgfgf_threshold->minimum() == 0 && controls.gfgfgf_threshold->maximum() == 1,
+    require(controls.gfg_fgf_selection_ratio->minimum() == 0 && controls.gfg_fgf_selection_ratio->maximum() == 1 &&
+            controls.gfg_fgf_threshold->minimum() == 0 && controls.gfg_fgf_threshold->maximum() == 1,
             "GFG-FGF ratio ranges are incorrect");
 
-    auto edited = customFusionOptions();
+    auto edited = customFusionValues();
     controls.setValues(edited);
     for (const auto method : fusionMethods) {
         controls.selectMethod(method);
@@ -694,34 +800,34 @@ void verifyFusionSettings() {
         flushLayout();
         controls.requireValues(edited);
     }
-    controls.selectMethod(mif::FusionMethod::GuidedFilter);
-    edited.method = mif::FusionMethod::GuidedFilter;
+    controls.selectMethod(FusionMethod::GuidedFilter);
+    edited.method = FusionMethod::GuidedFilter;
     controls.requireValues(edited);
     // 奇数约束在控件内处理；主窗口无需了解任一融合方法的字段规则。
-    controls.guided.window->setValue(10);
-    edited.guided_filter.focus.window = 11;
-    controls.pyramid.window->setValue(14);
-    edited.laplacian_pyramid.focus.window = 15;
-    controls.dct_window->setValue(4);
-    edited.dct.consistency_window = 5;
-    controls.dtcwt_window->setValue(6);
-    edited.dtcwt.activity_window = 7;
-    controls.gfgfgf_window->setValue(10);
-    edited.gfgfgf.difference_window = 11;
+    controls.guided.window_size->setValue(10);
+    edited.guided_filter.focus.window_size = 11;
+    controls.pyramid.window_size->setValue(14);
+    edited.laplacian_pyramid.focus.window_size = 15;
+    controls.block_variance_consistency_window_size->setValue(4);
+    edited.block_variance.consistency_window_size = 5;
+    controls.dtcwt_activity_window_size->setValue(6);
+    edited.dtcwt.activity_window_size = 7;
+    controls.gfg_fgf_local_mean_window_size->setValue(10);
+    edited.gfg_fgf.local_mean_window_size = 11;
     controls.requireValues(edited);
 
     for (const auto method : fusionMethods) {
-        edited = customFusionOptions();
+        edited = customFusionValues();
         edited.method = method;
         controls.setValues(edited);
         controls.reset->click();
-        const mif::FusionOptions defaults;
+        const FusionValues defaults;
         switch (method) {
-        case mif::FusionMethod::GuidedFilter: edited.guided_filter = defaults.guided_filter; break;
-        case mif::FusionMethod::LaplacianPyramid: edited.laplacian_pyramid = defaults.laplacian_pyramid; break;
-        case mif::FusionMethod::Dct: edited.dct = defaults.dct; break;
-        case mif::FusionMethod::Dtcwt: edited.dtcwt = defaults.dtcwt; break;
-        case mif::FusionMethod::Gfgfgf: edited.gfgfgf = defaults.gfgfgf; break;
+        case FusionMethod::GuidedFilter: edited.guided_filter = defaults.guided_filter; break;
+        case FusionMethod::LaplacianPyramid: edited.laplacian_pyramid = defaults.laplacian_pyramid; break;
+        case FusionMethod::BlockVariance: edited.block_variance = defaults.block_variance; break;
+        case FusionMethod::Dtcwt: edited.dtcwt = defaults.dtcwt; break;
+        case FusionMethod::GfgFgf: edited.gfg_fgf = defaults.gfg_fgf; break;
         }
         controls.requireValues(edited);
         controls.requireVisibility(method);
@@ -763,13 +869,13 @@ void verifyFusionSelection(const QStringList& paths, const std::vector<cv::Mat>&
             selector->removeItem(last);
             selector->insertItem(0, label, value);
         }
-        auto options = customFusionOptions();
+        auto options = customFusionValues();
         options.method = method;
         controls.setValues(options);
         controls.requireValues(options);
         require(controls.method->currentIndex() != static_cast<int>(method),
                 "Fusion fixture must move the selected method away from its enum position");
-        const auto expected = mif::fuse(images, options);
+        const auto expected = mif::fuse(images, options.selectedOptions());
         runFusion(window, [&] {
             require(!registration->isEnabled() && !controls.settings->isEnabled() && !controls.reset->isEnabled(),
                     "Processing must lock both parameter groups and the fusion reset button");
@@ -798,20 +904,20 @@ void verifyMinimumFusionRegularization(const QTemporaryDir& directory) {
         directory.filePath(QStringLiteral("平坦_02.tif"))};
     for (int i = 0; i < paths.size(); ++i)
         mif::desktop::writeImage(paths[i], images[static_cast<std::size_t>(i)]);
-    for (const auto method : {mif::FusionMethod::GuidedFilter, mif::FusionMethod::LaplacianPyramid,
-                              mif::FusionMethod::Gfgfgf}) {
-        mif::FusionOptions options;
+    for (const auto method : {FusionMethod::GuidedFilter, FusionMethod::LaplacianPyramid,
+                              FusionMethod::GfgFgf}) {
+        FusionValues options;
         options.method = method;
         options.guided_filter.base_epsilon = 1e-6;
         options.guided_filter.detail_epsilon = 1e-6;
         options.laplacian_pyramid.detail_epsilon = 1e-6;
-        options.gfgfgf.guided_epsilon = 1e-6;
+        options.gfg_fgf.guided_epsilon = 1e-6;
         mif::desktop::MainWindow window;
         window.addPaths(paths);
         FusionControls controls(window);
         controls.setValues(options);
         controls.requireValues(options);
-        const auto expected = mif::fuse(images, options);
+        const auto expected = mif::fuse(images, options.selectedOptions());
         runFusion(window);
         require(window.resultImage().type() == CV_32FC1 && cv::checkRange(window.resultImage()) &&
                 cv::checkRange(expected.image) && mae(window.resultImage(), expected.image) < 1e-6,
@@ -819,9 +925,58 @@ void verifyMinimumFusionRegularization(const QTemporaryDir& directory) {
     }
 }
 
+// 参数面板销毁后，已导出的配置仍可使用；Worker 再克隆，使调用方后续修改不影响任务。
+// 将原配置改成非法值后才启动线程，真实结果能同时检查配准和融合两份快照的隔离。
+void verifyWorkerSnapshots(const QStringList& paths, const std::vector<cv::Mat>& images) {
+    const auto registration_values = customRegistrationValues(RegistrationMethod::Ecc, mif::MotionModel::Homography);
+    auto fusion_values = customFusionValues();
+    fusion_values.method = FusionMethod::LaplacianPyramid;
+    const auto expected = mif::registerAndFuse(images, *registration_values.selectedOptions(),
+                                               fusion_values.selectedOptions());
+    std::unique_ptr<mif::RegistrationOptionsBase> registration;
+    std::unique_ptr<mif::FusionOptionsBase> fusion;
+    {
+        mif::desktop::MainWindow window;
+        RegistrationControls registration_controls(window);
+        FusionControls fusion_controls(window);
+        registration_controls.selectMethod(registration_values.method);
+        registration_controls.setValues(registration_values);
+        fusion_controls.setValues(fusion_values);
+        registration = registration_controls.settings->options();
+        fusion = fusion_controls.settings->options();
+    }
+    auto* ecc = dynamic_cast<mif::EccRegistrationOptions*>(registration.get());
+    auto* pyramid = dynamic_cast<mif::LaplacianPyramidFusionOptions*>(fusion.get());
+    require(ecc && pyramid, "Detached settings snapshots lost their concrete types");
+    mif::desktop::FusionWorker worker(paths, *registration, *fusion);
+    ecc->max_iterations = 0;
+    pyramid->max_levels = 0;
+
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    cv::Mat actual;
+    QString failure;
+    QObject::connect(&worker, &mif::desktop::FusionWorker::completed, &loop,
+                     [&](const cv::Mat& image, const QString&) { actual = image; loop.quit(); });
+    QObject::connect(&worker, &mif::desktop::FusionWorker::failed, &loop,
+                     [&](const QString& message) { failure = message; loop.quit(); });
+    QObject::connect(&worker, &mif::desktop::FusionWorker::cancelled, &loop, &QEventLoop::quit);
+    QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timeout.start(30000);
+    worker.start();
+    loop.exec();
+    worker.requestInterruption();
+    worker.wait();
+    require(!actual.empty(), "Worker did not preserve independent snapshots: " + failure.toStdString());
+    require(actual.type() == expected.fusion.image.type() && actual.size() == expected.fusion.image.size() &&
+            mae(actual, expected.fusion.image) < 0.1,
+            "Worker result changed after the caller edited its original configurations");
+}
+
 // 将算法和模型都挪到与枚举值不同的位置后真实执行，发现误用 currentIndex 的回归。
 void verifyRegistrationSelection(const QStringList& paths, const std::vector<cv::Mat>& images,
-                                 mif::RegistrationMethod method, mif::MotionModel model) {
+                                 RegistrationMethod method, mif::MotionModel model) {
     mif::desktop::MainWindow window;
     window.addPaths(paths);
     // 主窗口会自然排序文件；核心对照必须使用同一顺序，第一张始终是配准参考。
@@ -854,29 +1009,29 @@ void verifyRegistrationSelection(const QStringList& paths, const std::vector<cv:
     moveToFirst(controls.motion_model, static_cast<int>(model));
 
     // 非默认参数与缩小工作图同时生效；ECC 仿射/单应性和 SIFT 分别与核心入口对照。
-    // SIFT 接收并保留合法模型字段，但算法自身固定单应性，不使用这个 ECC 专属选择。
-    const auto registration_options = customRegistrationOptions(method, model);
+    // 选择 SIFT 时，隐藏的 ECC 模型由控件保留；SIFT 快照本身不含模型字段。
+    const auto registration_options = customRegistrationValues(method, model);
     controls.setValues(registration_options);
     controls.requireValues(registration_options);
-    const mif::FusionOptions fusion_options;
-    const auto expected = mif::registerAndFuse(images, registration_options, fusion_options);
+    const FusionValues fusion_options;
+    const auto expected = mif::registerAndFuse(images, *registration_options.selectedOptions(), fusion_options.selectedOptions());
     require(expected.fusion.image.size() != images.front().size(), "Registration fixture must crop transformed borders");
     runFusion(window, [&] {
         require(!registration_settings->isEnabled() && !fusion_settings->isEnabled(),
                 "Both parameter groups must be locked while the pipeline runs");
         require(!controls.method->isEnabled() && !controls.motion_model->isEnabled() &&
-                !controls.reset->isEnabled() && !controls.max_size->isEnabled() && !controls.iterations->isEnabled() &&
-                !controls.epsilon->isEnabled() && !controls.max_features->isEnabled() &&
-                !controls.match_ratio->isEnabled() && !controls.ransac_threshold->isEnabled() &&
+                !controls.reset->isEnabled() && !controls.max_working_dimension->isEnabled() && !controls.max_iterations->isEnabled() &&
+                !controls.convergence_tolerance->isEnabled() && !controls.max_features->isEnabled() &&
+                !controls.match_ratio_threshold->isEnabled() && !controls.ransac_reprojection_threshold->isEnabled() &&
                 !controls.min_inlier_ratio->isEnabled(),
                 "Registration algorithm, model or parameters remained editable during processing");
     });
     require(registration_settings->isEnabled() && fusion_settings->isEnabled(),
             "Both parameter groups must be unlocked when the pipeline finishes");
     require(controls.method->isEnabled() && controls.motion_model->isEnabled() && controls.reset->isEnabled() &&
-            controls.max_size->isEnabled() && controls.iterations->isEnabled() && controls.epsilon->isEnabled() &&
-            controls.max_features->isEnabled() && controls.match_ratio->isEnabled() &&
-            controls.ransac_threshold->isEnabled() && controls.min_inlier_ratio->isEnabled(),
+            controls.max_working_dimension->isEnabled() && controls.max_iterations->isEnabled() && controls.convergence_tolerance->isEnabled() &&
+            controls.max_features->isEnabled() && controls.match_ratio_threshold->isEnabled() &&
+            controls.ransac_reprojection_threshold->isEnabled() && controls.min_inlier_ratio->isEnabled(),
             "Registration fields did not unlock after processing");
     controls.requireValues(registration_options);
     require(window.resultImage().size() == expected.fusion.image.size(),
@@ -940,9 +1095,10 @@ int main(int argc, char** argv) {
         mif::desktop::writeImage(alignmentFirst, reference);
         mif::desktop::writeImage(alignmentSecond, shifted);
         verifyRegistrationSelection({alignmentFirst, alignmentSecond}, {reference, shifted},
-                                    mif::RegistrationMethod::Sift, mif::MotionModel::Affine);
+                                    RegistrationMethod::Sift, mif::MotionModel::Affine);
         verifyRegistrationSelection({alignmentFirst, alignmentSecond}, {reference, shifted},
-                                    mif::RegistrationMethod::Ecc, mif::MotionModel::Homography);
+                                    RegistrationMethod::Ecc, mif::MotionModel::Homography);
+        verifyWorkerSnapshots({alignmentFirst, alignmentSecond}, {reference, shifted});
         // 独立仿射样本包含小幅旋转和缩放，确保遗漏 motion_model 时默认平移无法冒充。
         cv::Mat affine = cv::getRotationMatrix2D(cv::Point2f(160.f, 120.f), 1.2, 1.015);
         affine.at<double>(0, 2) += 3.0;
@@ -955,7 +1111,7 @@ int main(int argc, char** argv) {
         mif::desktop::writeImage(affineFirst, reference);
         mif::desktop::writeImage(affineSecond, affine_shifted);
         verifyRegistrationSelection({affineFirst, affineSecond}, {reference, affine_shifted},
-                                    mif::RegistrationMethod::Ecc, mif::MotionModel::Affine);
+                                    RegistrationMethod::Ecc, mif::MotionModel::Affine);
         verifyRegistrationSettings();
         verifyFusionSettings();
         verifyFusionSelection({first, second}, stack);
@@ -982,24 +1138,24 @@ int main(int argc, char** argv) {
                 require(window.grab().save(path), "Screenshot save failed: " + path.toStdString());
             };
             tabs->setCurrentIndex(0);
-            controls.selectMethod(mif::RegistrationMethod::None);
+            controls.selectMethod(RegistrationMethod::None);
             capture({});
-            controls.selectMethod(mif::RegistrationMethod::Ecc);
+            controls.selectMethod(RegistrationMethod::Ecc);
             controls.selectMotionModel(mif::MotionModel::Affine);
             capture("_ecc");
-            controls.selectMethod(mif::RegistrationMethod::Sift);
+            controls.selectMethod(RegistrationMethod::Sift);
             capture("_sift");
             tabs->setCurrentIndex(1);
-            fusion_controls.selectMethod(mif::FusionMethod::GuidedFilter);
+            fusion_controls.selectMethod(FusionMethod::GuidedFilter);
             capture("_fusion_guided");
             capture("_fusion_guided_bottom", true);
-            fusion_controls.selectMethod(mif::FusionMethod::LaplacianPyramid);
+            fusion_controls.selectMethod(FusionMethod::LaplacianPyramid);
             capture("_fusion_pyramid");
-            fusion_controls.selectMethod(mif::FusionMethod::Dct);
+            fusion_controls.selectMethod(FusionMethod::BlockVariance);
             capture("_fusion_dct");
-            fusion_controls.selectMethod(mif::FusionMethod::Dtcwt);
+            fusion_controls.selectMethod(FusionMethod::Dtcwt);
             capture("_fusion_dtcwt");
-            fusion_controls.selectMethod(mif::FusionMethod::Gfgfgf);
+            fusion_controls.selectMethod(FusionMethod::GfgFgf);
             capture("_fusion_gfgfgf");
             tabs->setCurrentIndex(0);
             window.resize(940, 670);

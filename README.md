@@ -5,7 +5,7 @@
 
 ## 功能
 
-- 五种传统融合方法：双尺度引导滤波（GFF）、拉普拉斯金字塔、块方差（DCT）、DTCWT 双树复小波、GFG-FGF。
+- 五种传统融合方法：双尺度引导滤波（GFF）、拉普拉斯金字塔、块方差（参考项目称 DCT）、DTCWT 双树复小波、GFG-FGF。
   各方法独立配置；GFF 和金字塔使用 OpenCV `ximgproc`，GFG-FGF 按论文实现四邻域聚焦度量、Sobel 平局处理与快速引导滤波。
 - 可选 ECC 配准（平移 / 仿射 / 单应性）或 SIFT + RANSAC 单应性配准，自动裁剪共同有效区域。
   配准与融合可独立调用，也可一步完成。
@@ -17,13 +17,21 @@
 **当前仅包含传统算法，不使用 AI 模型。** 设计参考
 [OpenFocus](https://github.com/Xinzhe99/OpenFocus)，具体原理、参数及借鉴范围见 [算法说明](docs/algorithm.md)。
 
+## 下载试用（Windows x64）
+
+在 [GitHub Releases](https://github.com/hzweifei/Multi-focus-Image-Fusion/releases) 下载
+`Multi-focus-Image-Fusion-<版本>-windows-x64.zip`，完整解压后双击 `mif_desktop.exe`。
+压缩包包含 Qt/OpenCV 运行依赖、使用说明和示例图片，无需配置开发环境。
+首次试用可添加包内两张 `focus_*.png`，再点击“开始融合”。
+发布页同时提供 SHA256 校验文件；标记为 Pre-release 的版本用于测试反馈。
+
 ## 文档导航
 
 | 需要做什么 | 文档 |
 |---|---|
 | 编译、运行、整理交付文件与生成示例 | [构建与交付](docs/build.md) |
 | 理解算法、选择方法和调整参数 | [算法说明](docs/algorithm.md) |
-| 查找代码和阅读实现 | [算法模块导航](algorithms/README.md) · [架构与扩展](docs/architecture.md) |
+| 查找代码和阅读实现 | [算法目录](docs/architecture.md#算法目录) · [架构与扩展](docs/architecture.md) |
 | 在其他程序中调用 | [C++ SDK](docs/sdk.md) · [Python 接口](bindings/python/README.md) |
 | 运行测试与了解验证边界 | [验证指南](docs/verification.md) |
 
@@ -34,7 +42,7 @@ algorithms/       C++ 算法库；include/mif/ 为公开接口，src/ 为内部�
 apps/desktop/     Qt 桌面应用
 bindings/python/  nanobind 扩展与 Python 包
 ext/              第三方 Git 子模块
-cmake/            依赖查找、安装与交付规则
+cmake/            SDK 配置、安装与运行库收集规则
 tests/            C++ / Qt 回归测试与外部 SDK 消费方
 examples/         C++ / Python 调用示例
 docs/             算法、架构、构建、接口与验证说明
@@ -79,17 +87,16 @@ cmake --build build/desktop --config Release --parallel
 图片已对齐时直接使用 `mif::fuse(images, fusion)`；需要配准时：
 
 ```cpp
-#include <mif/pipeline.hpp>
+#include <mif/mif.hpp>
 
-mif::RegistrationOptions registration;
-registration.method = mif::RegistrationMethod::Ecc;
-registration.motion_model = mif::MotionModel::Affine;
-mif::FusionOptions fusion;
-fusion.guided_filter.focus.window = 9;
+mif::EccRegistrationOptions registration_options;
+registration_options.motion_model = mif::MotionModel::Affine;
+mif::GuidedFilterFusionOptions fusion_options;
+fusion_options.focus.window_size = 9;
 
-auto result = mif::registerAndFuse(images, registration, fusion); // images: std::vector<cv::Mat>
+auto result = mif::registerAndFuse(images, registration_options, fusion_options); // images: std::vector<cv::Mat>
 cv::Mat fused = result.fusion.image;
-// result.crop、result.transforms 保存配准元数据。
+// result.crop_region、result.transforms 保存配准元数据。
 ```
 
 也可先 `registerImages()` 再 `fuse()`，与组合入口采用相同数据路径。
@@ -100,23 +107,21 @@ cv::Mat fused = result.fusion.image;
 ```python
 import mif
 
-registration = mif.RegistrationOptions()
-registration.method = mif.RegistrationMethod.ECC
-fusion = mif.FusionOptions()
-fusion.method = mif.FusionMethod.LAPLACIAN_PYRAMID
-fusion.laplacian_pyramid.levels = 5
-result = mif.register_and_fuse([image_near, image_far], registration, fusion)
+registration_options = mif.EccRegistrationOptions()
+fusion_options = mif.LaplacianPyramidFusionOptions()
+fusion_options.max_levels = 5
+result = mif.register_and_fuse([image_near, image_far], registration_options, fusion_options)
 fused = result["image"]  # NumPy；彩色为 BGR
 ```
 
 `mif.fuse()` 只返回图像；`mif.fuse_detailed()` 额外返回方法支持的诊断；
-`mif.register_images()` 仅配准。DTCWT 没有单一空间来源图，`focus_indices=None`、`weights=[]`。
+`mif.register_images()` 仅配准。DTCWT 没有单一空间来源图，`source_index_map=None`、`weight_maps=[]`。
 配置、所有权和返回字典见 [Python 接口](bindings/python/README.md)。
 
-采用论文《多聚焦显微图像融合算法》的流程时，选择 `FusionMethod.GFGFGF`。
+采用论文《多聚焦显微图像融合算法》的流程时，使用 `GfgFgfFusionOptions`。
 该方法默认保留全部焦面（`selection_ratio=0`），使用类高斯四邻域梯度和均值残差生成聚焦图，
 经快速引导滤波、跨焦面最大值及 Sobel 平局判断后细化融合权重。
-`guided_subsample=4` 控制快速滤波的下采样倍数，设为 1 可使用完整分辨率。
+`guided_subsample_factor=4` 控制快速滤波的下采样倍数，设为 1 可使用完整分辨率。
 项目参数默认值、论文未给出的设置和数值处理差异见 [GFG-FGF 算法说明](docs/algorithm.md#45-gfg-fgf四邻域聚焦度量与两次快速引导滤波)。
 
 当前整栈驻留内存，尚未实现大图分块、批量任务或安装包。真实采集图像的效果仍需评估，

@@ -1,41 +1,16 @@
 # C++ SDK
 
-目录结构：
+## 接入项目
+
+交付目录 `outputs/<配置>/sdk/` 包含：
 
 ```text
-include/mif/   融合、配准、组合流程及参数和进度的公开头文件
-lib/           mif_core.lib（Windows DLL 的导入库；Debug 为 mif_cored.lib）
-bin/           mif_core.dll 和依赖的运行库（Debug 为 mif_cored.dll）
-lib/cmake/Mif/  find_package(Mif) 所需的配置
+include/mif/   公开头文件，普通调用只需包含 mif/mif.hpp
+lib/           导入库或静态库；Windows Debug 库名带 d
+bin/           核心 DLL 与依赖运行库
+lib/cmake/Mif/  find_package(Mif) 配置
 licenses/      第三方声明
 ```
-
-公开头文件按调用职责划分：
-
-| 头文件 | 内容 |
-|---|---|
-| `fusion.hpp` | `fuse()`、`FusionResult`；包含融合参数和进度约定 |
-| `fusion_options.hpp` | `FusionOptions`、`FusionMethod`；包含五种方法的参数头 |
-| `fusion/focus_options.hpp` | `FocusOptions`、`FocusMeasure` |
-| `fusion/guided_filter_options.hpp` | `GuidedFilterOptions` |
-| `fusion/laplacian_pyramid_options.hpp` | `LaplacianPyramidOptions` |
-| `fusion/dct_options.hpp` | `DctOptions` |
-| `fusion/dtcwt_options.hpp` | `DtcwtOptions` |
-| `fusion/gfgfgf_options.hpp` | `GfgfgfOptions` |
-| `registration.hpp` | `registerImages()`、`RegistrationResult`；包含配准参数和进度约定 |
-| `registration_options.hpp` | `RegistrationOptions`、`RegistrationMethod`、`MotionModel` |
-| `pipeline.hpp` | `registerAndFuse()`、`PipelineResult`；包含两阶段公开接口 |
-| `progress.hpp` | `ProgressCallback`、`Cancelled` |
-| `export.hpp` | CMake 生成的库符号导出声明 |
-
-默认构建动态库。可用 `MIF_BUILD_SHARED=OFF` 构建静态库，此时不会生成 mif_core DLL。
-请让调用方与 SDK 的操作系统、架构、编译器 ABI、C++ 运行库和 Debug/Release 配置一致。
-Windows 当前版本使用 MSVC x64。
-
-公开接口使用 `cv::Mat`，因此开发者还需提供与 SDK 构建版本相同的 OpenCV **开发包**。
-开发包必须包含 `opencv_contrib` 的 `ximgproc` 模块，用于官方引导滤波。
-`find_package(Mif)` 会按 SDK 构建时的版本查找 OpenCV，包括 `ximgproc`。
-SDK 中包含运行所需 DLL，不复制 OpenCV 的头文件或第三方导入库。
 
 ```cmake
 cmake_minimum_required(VERSION 3.21)
@@ -45,198 +20,141 @@ add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE mif::core)
 ```
 
-配置时用 `-DCMAKE_PREFIX_PATH=<SDK目录>`，并按自己的依赖管理方式设置 OpenCV。
-例如 vcpkg 用户同时指定自己的 toolchain。无需手写源项目路径。
+用 `-DCMAKE_PREFIX_PATH=<SDK目录>` 指定 SDK；OpenCV 可通过 vcpkg toolchain 或
+`OpenCV_DIR` 提供。公开接口使用 `cv::Mat`，需要与构建 SDK 时版本相同、包含
+`ximgproc` 的 OpenCV 开发包。SDK 附带运行库，不复制 OpenCV 头文件和导入库。
+
+调用方与 SDK 应使用一致的架构、编译器 ABI、C++ 运行库及 Debug/Release 配置。
+当前 Windows 环境使用 MSVC x64。`mif::core` 自动传递依赖、包含路径及 MSVC 的 `/utf-8`。
+默认生成动态库；`MIF_BUILD_SHARED=OFF` 可生成静态库。
+
+当前 SDK 版本为 `0.2.0`。0.x 阶段只声明同一次版本内的兼容性；可用
+`find_package(Mif 0.2 CONFIG REQUIRED)` 避免误用接口不同的 0.1.x SDK。
 
 ## 三种调用方式
 
-图像已对齐时直接调用纯融合入口：
+统一包含一个头文件，具体参数类型决定方法，无需再设置 `method`：
 
 ```cpp
-#include <mif/fusion.hpp>
+#include <mif/mif.hpp>
 
-cv::Mat combineAligned(const std::vector<cv::Mat>& images) {
-    return mif::fuse(images).image;
-}
+// 1. 已对齐图像直接融合；默认使用 GFF。
+auto default_result = mif::fuse(images);
+
+// 2. 分别配准与融合，允许保存或重复使用配准结果。
+mif::EccRegistrationOptions registration_options;
+registration_options.motion_model = mif::MotionModel::Affine;
+registration_options.max_iterations = 200;
+auto registration_result = mif::registerImages(images, registration_options);
+
+mif::BlockVarianceFusionOptions fusion_options;
+fusion_options.block_size = 8;
+fusion_options.include_weight_maps = true;
+auto fusion_result = mif::fuse(registration_result.images, fusion_options);
+
+// 3. 同一套配置也可直接交给组合入口。
+auto pipeline_result = mif::registerAndFuse(images, registration_options, fusion_options);
+cv::Mat fused = pipeline_result.fusion.image;
 ```
 
-需要查看、保存或重复使用配准图像时，分别调用两步：
+配准默认使用 `NoRegistrationOptions`：复制输入，不估计变换、不重采样。
+需要 ECC 或 SIFT 时传入相应配置。`motion_model` 只存在于 ECC 配置中，
+SIFT 固定估计单应性；ECC 支持 `Translation`、`Affine`、`Homography`。
 
-```cpp
-#include <mif/fusion.hpp>
-#include <mif/registration.hpp>
+三个入口均要求至少两张同尺寸、同类型的二维灰度或 BGR 图像，支持 8 位、16 位
+无符号整数及值域 `[0,1]` 的有限 float32。支持非连续 ROI，各边至少 2 像素。
+开启配准时工作图各边至少 16 像素，共同有效区域各边至少 8 像素。
+输入不被修改，调用期间也不能被其他线程修改。整数图像配准后恢复原位深再融合，
+组合入口与显式两步具有相同的量化路径。
 
-mif::RegistrationOptions registration;
-registration.method = mif::RegistrationMethod::Ecc;
-registration.motion_model = mif::MotionModel::Affine;
-auto registered = mif::registerImages(images, registration);
-// registered.images 为原位深的独立图像；crop 和 transforms 保存配准元数据。
+## 参数类型
 
-mif::FusionOptions fusion;
-fusion.keep_weight_maps = true;
-fusion.guided_filter.focus.window = 7;
-fusion.guided_filter.base_radius = 15;
-auto result = mif::fuse(registered.images, fusion);
-cv::Mat fused = result.image;
-```
+| 类型 | 主要字段 |
+|---|---|
+| `EccRegistrationOptions` | `motion_model`、`max_iterations`、`convergence_tolerance` |
+| `SiftRegistrationOptions` | `max_features`、`match_ratio_threshold`、`ransac_reprojection_threshold`、`min_inlier_ratio` |
+| `NoRegistrationOptions` | 不执行变换；保留输入副本 |
+| `GuidedFilterFusionOptions` | `focus`、`base_radius`、`detail_radius`、`base_epsilon`、`detail_epsilon` |
+| `LaplacianPyramidFusionOptions` | `focus`、`detail_radius`、`detail_epsilon`、`max_levels` |
+| `BlockVarianceFusionOptions` | `block_size`、`consistency_window_size` |
+| `DtcwtFusionOptions` | `max_levels`、`activity_window_size` |
+| `GfgFgfFusionOptions` | `local_mean_window_size`、`selection_ratio`、`gfg_threshold`、`guided_radius`、`guided_epsilon`、`guided_subsample_factor` |
 
-一次完成配准和融合时使用组合入口：
+配准基类 `RegistrationOptionsBase` 提供 `max_working_dimension`，默认 1200，限制估计
+变换时的最长边；重采样始终在原分辨率进行。融合基类 `FusionOptionsBase` 提供
+`include_weight_maps`，默认关闭，只控制返回的权重诊断。二者独立，不共用一个总配置。
 
-```cpp
-#include <mif/pipeline.hpp>
+`FocusMeasureOptions` 包含 `measure` 与 `window_size`；GFF 和金字塔各自持有 `focus`。
+窗口名以 `window_size` 结尾时表示边长，`radius` 表示半径。块方差的一致性窗口
+以块为单位，小波活动度窗口以子带采样点为单位，详见对应头文件。
 
-mif::RegistrationOptions registration;
-registration.method = mif::RegistrationMethod::Sift;
-mif::FusionOptions fusion;
-auto result = mif::registerAndFuse(images, registration, fusion);
-cv::Mat fused = result.fusion.image;
-cv::Rect crop = result.crop;
-const auto& transforms = result.transforms;
-```
+GFG-FGF 默认 `selection_ratio=0` 保留全部输入；`gfg_threshold=0.005` 是 GFG 响应阈值，
+弱响应回退到局部均值残差。`guided_subsample_factor=4` 控制快速滤波下采样，1 表示全分辨率。
+GFF/金字塔的引导滤波使用 OpenCV `ximgproc`；GFG-FGF 使用项目的快速引导滤波实现。
+各方法引导滤波正则项要求为 `[1e-6, FLT_MAX]` 内的有限值；ECC 的
+`convergence_tolerance` 是独立的收敛阈值。完整默认值、单位和边界见 [算法说明](algorithm.md)。
 
-三个入口均要求至少两张同尺寸、同类型的灰度或 BGR 图像，支持 8 位、16 位无符号整数
-和 `[0, 1]` 内的有限 float32；输入不被修改。配准默认 `method = RegistrationMethod::None`，
-此时返回独立副本和完整图像范围。结果类型与矩阵坐标约定见公开头文件
-`mif/registration.hpp` 和 `mif/fusion.hpp` 中的说明。
+同步 C++ 入口借用 `const Base&`。后台任务可调用 `options.clone()` 保存具体类型的独立副本，
+不要按值复制基类。Qt 工作线程和 Python 绑定已采用该快照方式。
 
-`method` 只选择算法；`motion_model` 只指定 ECC 的平移、仿射或单应性模型，
-默认 `MotionModel::Translation`。SIFT 固定求解单应性，忽略保留的合法模型值；
-关闭配准时也不使用该字段。两个枚举的非法值均会被拒绝。
+## 结果与进度
 
-融合参数按方法保存，仅选中方法参与计算和校验：
+| 结果 | 字段 |
+|---|---|
+| `FusionResult` | `image`、`source_index_map`、`weight_maps` |
+| `RegistrationResult` | `images`、`crop_region`、`transforms` |
+| `PipelineResult` | `fusion`、`crop_region`、`transforms`；不长期保留中间图像 |
 
-| `FusionMethod` | 配置成员 | 参数 |
-|---|---|---|
-| `GuidedFilter` | `guided_filter` | `focus`、基础/细节滤波半径与正则项 |
-| `LaplacianPyramid` | `laplacian_pyramid` | `focus`、细节滤波半径与正则项、`levels` |
-| `Dct` | `dct` | `block_size`、`consistency_window` |
-| `Dtcwt` | `dtcwt` | `levels`、`activity_window` |
-| `Gfgfgf` | `gfgfgf` | `difference_window`、`selection_ratio`、`difference_threshold`、`guided_radius`、`guided_epsilon`、`guided_subsample` |
+`source_index_map` 为可选 `CV_32SC1` 诊断图，记录原始输入的零起始索引，不是物理深度或置信度。
+GFF/金字塔记录最大细节权重的来源，块方差记录选块来源，GFG-FGF 记录最大最终权重的来源。
+`weight_maps` 仅在 `include_weight_maps=true` 且方法支持时返回，按原始输入顺序排列；
+被筛除的帧保留零权重占位。GFF/金字塔返回细节权重，不含全部中间权重。
+DTCWT 在尺度和方向上选择系数，来源图与空间权重均为空，使用诊断前应检查。
 
-GFG-FGF 默认 `selection_ratio=0` 保留全部输入；`difference_threshold=0.005` 表示
-类高斯四邻域梯度阈值，弱梯度位置使用局部均值残差。`guided_subsample` 范围 `[1,16]`、
-默认 4；1 使用完整分辨率，其余值在缩小的图上估计引导滤波系数。
-窗口 7、半径 5、正则项 0.3 和下采样倍数 4 为项目默认值，论文没有完整给出这些设置。
+`crop_region` 位于第一张原始输入的坐标系中。`transforms[i]` 将参考图原始坐标映射到
+第 i 张源图原始坐标；矩阵不含裁剪偏移，映射裁剪后像素前应加上裁剪区域的左上角。
+None/ECC 平移与仿射返回 2×3 float32 矩阵，ECC 单应性/SIFT 返回 3×3 矩阵。
+3×3 映射需要齐次除法。第一张输入对应单位矩阵。
 
-GFF 的 `base_epsilon`、`detail_epsilon`，金字塔的 `detail_epsilon`，以及 GFG-FGF 的
-`guided_epsilon` 均须为 `[1e-6, FLT_MAX]` 范围内的有限数；`FLT_MAX` 约为 `3.4e38`。
-该范围适应官方引导滤波的浮点精度，防止平坦区域除零或转换为 float32 时溢出；
-ECC 的 `RegistrationOptions.epsilon` 是独立的收敛阈值。Qt 融合界面采用 `[1e-6, 1]`
-作为常用调参范围。
+结果不引用输入缓冲区，但复制结果结构会共享 `cv::Mat` 数据；需要独立可写副本时使用 `clone()`。
+进度回调在调用线程同步执行，返回 `false` 抛出 `mif::Cancelled`，回调自身异常原样传播。
+取消只在检查点生效，不能中断正在执行的单次 OpenCV 操作。
 
-```cpp
-mif::FusionOptions options;
-options.guided_filter.focus.measure = mif::FocusMeasure::Tenengrad;
-options.guided_filter.focus.window = 7;
-options.guided_filter.detail_radius = 2;
-options.laplacian_pyramid.focus.window = 11;
-options.laplacian_pyramid.levels = 4;
-options.dct.block_size = 8;
-options.dct.consistency_window = 7;
-options.method = mif::FusionMethod::Dct;
-auto result = mif::fuse(images, options); // 仅使用 dct 配置，其他方法的值保留。
-```
+## 头文件与扩展
 
-`focus_indices` 和 `weights` 是方法提供的可选诊断，使用前应检查是否为空：
+普通调用使用 `<mif/mif.hpp>`；也可按需包含 `fusion.hpp`、`registration.hpp`、`pipeline.hpp`。
+`fusion_options.hpp` 和 `registration_options.hpp` 是内置参数汇总头。
+具体参数头位于 `fusion/*_fusion_options.hpp`、`registration/*_registration_options.hpp`；
+两条体系的基类位于各自的 `options_base.hpp`，清晰度配置为 `fusion/focus_measure_options.hpp`。
+`MotionModel` 定义在 `registration/ecc_registration_options.hpp`，与 ECC 参数一起提供。
+`progress.hpp` 提供回调与取消异常，`export.hpp` 由 CMake 生成。
 
-| 方法 | `focus_indices` | `keep_weight_maps=true` 时的 `weights` |
-|---|---|---|
-| GFF、拉普拉斯金字塔 | 最大细节权重的来源索引 | 归一化细节权重 |
-| DCT 块方差 | 经过一致性处理的块来源索引 | 选块权重 |
-| GFG-FGF | 最大最终权重的来源索引 | 最终融合权重，排除帧为全零 |
-| DTCWT | 空 `cv::Mat` | 空 `std::vector` |
-
-索引从零开始并对应原始输入顺序；权重存在时也按该顺序排列。关闭权重保留时，
-`weights` 一律为空。DTCWT 在多个尺度和方向选择系数，开启诊断也不会生成单一来源图。
-
-每个入口的最后一个参数均可传入 `ProgressCallback`。回调在调用线程执行，
-返回 `false` 抛出 `mif::Cancelled`；回调自身异常原样传播。
-
-## 运行依赖
-
-Windows 运行时将 `bin/` 中的 DLL 复制到调用程序旁边，或将 SDK 的 `bin/` 加入
-该程序的 DLL 搜索路径。`mif_core.lib` 只用于链接，不能替代运行时 DLL。
-通过 `mif::core` 链接时会自动传递头文件路径和依赖信息。
-MSVC 下还会传递 `/utf-8`，以正确读取公开头文件中的中文注释；调用方源码也应使用 UTF-8。
+新增源码内的方法只需定义参数、实现算法并加入显式注册清单，统一处理入口无需增加分支。
+注册表是内部扩展接口，不是动态插件 ABI，也不随 SDK 安装；步骤见 [架构与扩展](architecture.md)。
 
 ## 接口迁移
 
-### 新增方法与官方引导滤波
+这次移除了聚合式 `FusionOptions`、`RegistrationOptions` 及核心方法枚举。用对应的具体参数
+类型替换旧配置，直接设置该类型的字段，例如 `options.dct.block_size` 改为
+`BlockVarianceFusionOptions options; options.block_size = 8;`。不保留旧字段转发别名。
 
-`FusionOptions` 新增 `dct`、`dtcwt`、`gfgfgf` 配置。`FusionMethod::GuidedFilter=0`
-和 `LaplacianPyramid=1` 保持原值，新方法在其后追加。参数结构的大小已改变，
-**SDK 消费方必须使用配套的新头文件和新库重新编译，不承诺二进制兼容**。
-
-引导滤波已改用 OpenCV `ximgproc`，边界处理遵循该实现；与旧版本不承诺逐像素相同。
-部署时应更新 OpenCV 开发包及运行库，不能只替换 `mif_core.dll`。
-读取诊断时应允许空值，尤其是 DTCWT 的空索引和空权重。
-
-### 融合方法独立参数
-
-`FusionOptions` 不再直接包含清晰度和滤波数值字段，改为持有各方法的独立配置。
-原来的扁平属性已移除，不提供转发别名。根据当时使用的方法迁移：
-
-| 旧字段 | 双尺度引导滤波 | 拉普拉斯金字塔 |
-|---|---|---|
-| `focus_measure` | `guided_filter.focus.measure` | `laplacian_pyramid.focus.measure` |
-| `focus_window` | `guided_filter.focus.window` | `laplacian_pyramid.focus.window` |
-| `detail_radius` | `guided_filter.detail_radius` | `laplacian_pyramid.detail_radius` |
-| `detail_epsilon` | `guided_filter.detail_epsilon` | `laplacian_pyramid.detail_epsilon` |
-| `base_radius` | `guided_filter.base_radius` | 不使用 |
-| `base_epsilon` | `guided_filter.base_epsilon` | 不使用 |
-| `pyramid_levels` | 不使用 | `laplacian_pyramid.levels` |
-
-`method`、`keep_weight_maps` 和处理入口保持原名。Python 使用相同的成员路径，
-也可单独创建 `mif.FocusOptions()`、`mif.GuidedFilterOptions()`、`mif.LaplacianPyramidOptions()`。
-两组配置独立存值；原来依赖一组数值控制两种方法的代码，现在需要分别赋值。
-计算只校验当前方法，未选中配置中的非法值不会影响当前处理，切换后才会被拒绝。
-这张迁移表适用于原有两种方法；新增方法使用自己的参数结构和诊断语义。
-
-### 配准与融合分阶段
-
-配准配置与流程已从融合接口拆出，旧调用方按下表更新：
-
-| 旧接口 | 新接口 |
+| 原名称 | 新名称 |
 |---|---|
-| `#include <mif/options.hpp>` | 按需使用 `fusion_options.hpp`、`registration_options.hpp`；各入口头已包含对应参数 |
-| `FusionOptions.alignment` | `RegistrationOptions.method` 与 `motion_model`，对应关系见下表 |
-| `FusionOptions.alignment_iterations`、`alignment_epsilon`、`alignment_max_size` | `RegistrationOptions.iterations`、`epsilon`、`max_size` |
-| `FusionOptions.alignment_max_features`、`alignment_match_ratio` | `RegistrationOptions.max_features`、`match_ratio` |
-| `FusionOptions.alignment_ransac_threshold`、`alignment_min_inlier_ratio` | `RegistrationOptions.ransac_threshold`、`min_inlier_ratio` |
-| 用 `fuse()` 同时配准和融合 | `registerAndFuse(images, registration, fusion)`，或显式调用两个阶段 |
-| 从 `FusionResult` 读取 `crop`、`transforms` | 从 `RegistrationResult` 或 `PipelineResult` 读取；纯 `FusionResult` 仅含 `image`、`focus_indices`、`weights` |
-| 组合结果的 `result.image`、`result.focus_indices`、`result.weights` | C++ 使用 `result.fusion.image`、`result.fusion.focus_indices`、`result.fusion.weights`；`crop`、`transforms` 仍在外层 |
+| `DctOptions` | `BlockVarianceFusionOptions`，反映实际块方差实现 |
+| `FocusOptions.window` | `FocusMeasureOptions.window_size` |
+| ECC `iterations` / `epsilon` | `max_iterations` / `convergence_tolerance` |
+| 配准 `max_size` | `max_working_dimension` |
+| SIFT `match_ratio` / `ransac_threshold` | `match_ratio_threshold` / `ransac_reprojection_threshold` |
+| `levels` | `max_levels` |
+| `consistency_window` / `activity_window` | `consistency_window_size` / `activity_window_size` |
+| `difference_window` / `difference_threshold` / `guided_subsample` | `local_mean_window_size` / `gfg_threshold` / `guided_subsample_factor` |
+| `keep_weight_maps` | `include_weight_maps` |
+| `focus_indices` / `weights` / `crop` | `source_index_map` / `weight_maps` / `crop_region` |
 
-### 配准算法与模型
+原先单独包含 `<mif/registration/motion_model.hpp>` 的代码，应改为
+`<mif/registration/ecc_registration_options.hpp>` 或统一入口 `<mif/mif.hpp>`。
+旧的独立枚举头已移除；`mif::MotionModel` 的名称、枚举值和调用方式保持不变。
 
-旧 `Alignment` 枚举已移除；不再把 ECC 的三种模型放进算法枚举。
-无论旧枚举来自 `FusionOptions.alignment` 还是 `RegistrationOptions.method`，均按下表迁移：
-
-| 旧 `Alignment` 成员 | 新 `RegistrationMethod` | 新 `MotionModel` |
-|---|---|---|
-| `None` | `None` | 不使用，保留默认值即可 |
-| `Translation` | `Ecc` | `Translation` |
-| `Affine` | `Ecc` | `Affine` |
-| `EccHomography` | `Ecc` | `Homography` |
-| `FeatureHomography` | `Sift` | 不使用，SIFT 固定单应性 |
-
-例如，旧 `options.method = mif::Alignment::EccHomography` 改为：
-
-```cpp
-options.method = mif::RegistrationMethod::Ecc;
-options.motion_model = mif::MotionModel::Homography;
-```
-
-Python 对应 `options.method = mif.RegistrationMethod.ECC` 和
-`options.motion_model = mif.MotionModel.HOMOGRAPHY`。旧整数枚举值不能直接转换为新值。
-算法内部仍沿用原来的求解、重采样和裁剪流程。
-
-Python 同样使用独立 `RegistrationOptions` 和 `FusionOptions`。旧的配准加融合调用
-改为 `register_and_fuse(images, registration_options, fusion_options)`，返回的字典保持平坦，
-包含 `image`、`focus_indices`、`weights`、`crop`、`transforms`。`fuse_detailed()` 只返回前三项，
-`register_images()` 返回 `images`、`crop`、`transforms`。
-
-公开参数和结果结构已变化，**SDK 调用方必须使用配套的新头文件与新库重新编译**。
-更新 Python 包时也应同时更新包装文件、扩展模块和核心库，避免混用新旧接口。
-组合流程与显式两步采用相同数据路径：整数图像配准后先恢复原位深，再交给融合。
-这会引入整数舍入，与旧版配准和融合之间直接传递浮点工作图相比，可能产生少量像素差异。
+SDK 调用方应使用配套的新头文件与新库重新编译。Windows 将 `bin/` 中的 DLL 放到调用程序旁，
+或加入该程序的 DLL 搜索路径；导入库不能替代 DLL。Python 包的包装文件、扩展和核心库也需同步更新。
+Python 使用相同类型和字段名，函数采用下划线命名；返回字典见 [Python 接口](../bindings/python/README.md)。

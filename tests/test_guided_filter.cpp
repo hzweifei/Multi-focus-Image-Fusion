@@ -2,15 +2,21 @@
 #include <mif/fusion.hpp>
 #include <functional>
 #include <limits>
+#include <type_traits>
 
 namespace {
 
 /// 统一把各方法所用的正则项设置为同一测试值，保持公开参数组独立。
-void setEpsilon(mif::FusionOptions& options, double epsilon) {
-    options.guided_filter.base_epsilon = epsilon;
-    options.guided_filter.detail_epsilon = epsilon;
-    options.laplacian_pyramid.detail_epsilon = epsilon;
-    options.gfgfgf.guided_epsilon = epsilon;
+template<class Options>
+void setEpsilon(Options& options, double epsilon) {
+    if constexpr (std::is_same_v<Options, mif::GuidedFilterFusionOptions>) {
+        options.base_epsilon = epsilon;
+        options.detail_epsilon = epsilon;
+    } else if constexpr (std::is_same_v<Options, mif::LaplacianPyramidFusionOptions>) {
+        options.detail_epsilon = epsilon;
+    } else {
+        options.guided_epsilon = epsilon;
+    }
 }
 
 } // 匿名命名空间
@@ -19,12 +25,8 @@ void setEpsilon(mif::FusionOptions& options, double epsilon) {
 /// 在公开入口验证参数保护与最小合法值，而不是重新实现公式来测试公式本身。
 void testGuidedFilterNumerics() {
     const cv::Mat constant(25, 37, CV_32F, cv::Scalar(0.5));
-    const std::vector<mif::FusionMethod> methods{mif::FusionMethod::GuidedFilter,
-        mif::FusionMethod::LaplacianPyramid, mif::FusionMethod::Gfgfgf};
-    for (const auto method : methods) {
-        mif::FusionOptions options;
-        options.method = method;
-        options.keep_weight_maps = true;
+    auto check = [&](auto options) {
+        options.include_weight_maps = true;
         for (double epsilon : {1e-100, 1e-8, 0.0, -1.0, std::numeric_limits<double>::max(),
                                 std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
             setEpsilon(options, epsilon);
@@ -39,11 +41,16 @@ void testGuidedFilterNumerics() {
         }
         for (int radius : {1, 3, 15, 255}) {
             setEpsilon(options, 1e-6);
-            options.guided_filter.base_radius = radius;
-            options.guided_filter.detail_radius = radius;
-            options.laplacian_pyramid.detail_radius = radius;
-            options.gfgfgf.guided_radius = radius;
-            options.gfgfgf.selection_ratio = 0;
+            using Options = decltype(options);
+            if constexpr (std::is_same_v<Options, mif::GuidedFilterFusionOptions>) {
+                options.base_radius = radius;
+                options.detail_radius = radius;
+            } else if constexpr (std::is_same_v<Options, mif::LaplacianPyramidFusionOptions>) {
+                options.detail_radius = radius;
+            } else {
+                options.guided_radius = radius;
+                options.selection_ratio = 0;
+            }
             const auto averaged = mif::fuse({constant * 0.4f, constant, constant * 1.6f}, options);
             require(cv::checkRange(averaged.image), "Minimum legal epsilon produced nonfinite output");
             require(cv::norm(averaged.image, constant, cv::NORM_INF) < 2e-5,
@@ -58,7 +65,7 @@ void testGuidedFilterNumerics() {
                 require(cv::checkRange(result.image) && cv::norm(result.image, image, cv::NORM_INF) < 2e-5,
                         "Guided filter corrupted repeated near-constant or locally flat inputs");
                 cv::Mat total = cv::Mat::zeros(image.size(), CV_32F);
-                for (const auto& weight : result.weights) {
+                for (const auto& weight : result.weight_maps) {
                     require(cv::checkRange(weight, true, nullptr, 0, 1.00001),
                             "Guided filter returned invalid diagnostic weights");
                     total += weight;
@@ -70,10 +77,13 @@ void testGuidedFilterNumerics() {
         setEpsilon(options, std::numeric_limits<float>::max());
         require(cv::checkRange(mif::fuse({constant, constant}, options).image),
                 "Largest representable guided epsilon failed");
-    }
+    };
+    check(mif::GuidedFilterFusionOptions{});
+    check(mif::LaplacianPyramidFusionOptions{});
+    check(mif::GfgFgfFusionOptions{});
     // GFF 两个正则项独立校验；不能只检查细节参数而漏掉基础参数。
-    mif::FusionOptions base_only;
-    base_only.guided_filter.base_epsilon = 1e-8;
+    mif::GuidedFilterFusionOptions base_only;
+    base_only.base_epsilon = 1e-8;
     bool rejected = false;
     try { mif::fuse({constant, constant}, base_only); }
     catch (const std::invalid_argument&) { rejected = true; }

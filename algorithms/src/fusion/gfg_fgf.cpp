@@ -2,9 +2,9 @@
 // 可选 Scharr 筛帧沿用 OpenFocus fusion_methods/gfg_fgf.py，提交 bf3a3a15c1c508fbba117f6e98a64e49a087434e。
 // 参考项目为 MIT 许可，Copyright (c) 2025 OpenFocus Contributors；完整声明见 THIRD_PARTY_NOTICES.md。
 // 默认保留全部焦面；数值容差、剩余平局等权、彩色灰度引导与权重截断为工程补充。
-#include "fusion/gfgfgf/gfgfgf.hpp"
-#include "fusion/gfgfgf/focus_information.hpp"
-#include "fusion/common/fast_guided_filter.hpp"
+#include "fusion/registry.hpp"
+#include <mif/fusion/gfg_fgf_fusion_options.hpp>
+#include "fusion/gfg_fgf/focus_information.hpp"
 #include "fusion/common/guided_filter.hpp"
 #include "fusion/common/weight_map.hpp"
 #include "common/grayscale.hpp"
@@ -16,18 +16,23 @@
 #include <utility>
 
 namespace mif::detail::fusion {
+namespace {
 
-void validateGfgfgfOptions(const GfgfgfOptions& options) {
-    if (options.difference_window < 1 || options.difference_window > 255 || options.difference_window % 2 == 0 ||
+/// 校验筛选比例、局部差异阈值、窗口、引导半径与正则项。
+void validateGfgFgfOptions(const GfgFgfFusionOptions& options) {
+    if (options.local_mean_window_size < 1 || options.local_mean_window_size > 255 || options.local_mean_window_size % 2 == 0 ||
         !std::isfinite(options.selection_ratio) || options.selection_ratio < 0 || options.selection_ratio > 1 ||
-        !std::isfinite(options.difference_threshold) || options.difference_threshold < 0 || options.difference_threshold > 1 ||
+        !std::isfinite(options.gfg_threshold) || options.gfg_threshold < 0 || options.gfg_threshold > 1 ||
         options.guided_radius < 1 || options.guided_radius > 255 ||
-        options.guided_subsample < 1 || options.guided_subsample > 16)
+        options.guided_subsample_factor < 1 || options.guided_subsample_factor > 16)
         throw std::invalid_argument("Invalid GFG-FGF options; check windows, thresholds and guided epsilon");
     validateGuidedEpsilon(options.guided_epsilon);
 }
 
-MethodResult gfgfgfFusion(const std::vector<cv::Mat>& images, const GfgfgfOptions& options,
+/// 归一化 CV_32F 灰度/BGR 栈的梯度筛选与两阶段引导滤波融合。
+/// 被筛除的原始输入返回零权重；诊断索引始终使用原始输入顺序。
+/// 保留输入尺寸与通道，配置应已校验；进度及取消异常原样传播。
+MethodResult gfgFgfFusion(const std::vector<cv::Mat>& images, const GfgFgfFusionOptions& options,
                           const ProgressCallback& progress) {
     const auto size = images.front().size();
     std::vector<cv::Mat> guides;
@@ -64,11 +69,11 @@ MethodResult gfgfgfFusion(const std::vector<cv::Mat>& images, const GfgfgfOption
     for (size_t j = 0; j < selected.size(); ++j) {
         report(progress, 45 + static_cast<int>(15 * j / selected.size()), "focus");
         const auto i = selected[j];
-        const cv::Mat information = paperFocusInformation(guides[i], options.difference_window,
-                                                          options.difference_threshold);
+        const cv::Mat information = paperFocusInformation(guides[i], options.local_mean_window_size,
+                                                          options.gfg_threshold);
         // 第一遍处理聚焦信息，保留有符号输出；它不是概率或融合权重。
         cv::Mat response = fastGuidedFilter(guides[i], information, options.guided_radius,
-                                            options.guided_epsilon, options.guided_subsample);
+                                            options.guided_epsilon, options.guided_subsample_factor);
         responses.push_back(std::move(response));
     }
     report(progress, 60, "weights");
@@ -80,7 +85,7 @@ MethodResult gfgfgfFusion(const std::vector<cv::Mat>& images, const GfgfgfOption
         report(progress, 60 + static_cast<int>(15 * j / selected.size()), "weights");
         // 第二遍处理决策；系数上采样后仍由原分辨率图像引导，权重裁剪后归一化。
         cv::Mat weight = fastGuidedFilter(guides[selected[j]], decisions[j], options.guided_radius,
-                                          options.guided_epsilon, options.guided_subsample);
+                                          options.guided_epsilon, options.guided_subsample_factor);
         decisions[j].release();
         guides[selected[j]].release();
         cv::max(weight, 0, weight);
@@ -92,17 +97,24 @@ MethodResult gfgfgfFusion(const std::vector<cv::Mat>& images, const GfgfgfOption
     normalizeWeights(weights);
     MethodResult result;
     result.image = cv::Mat::zeros(size, images.front().type());
-    result.weights.reserve(images.size());
+    result.weight_maps.reserve(images.size());
     for (size_t i = 0; i < images.size(); ++i)
-        result.weights.push_back(cv::Mat::zeros(size, CV_32F));
+        result.weight_maps.push_back(cv::Mat::zeros(size, CV_32F));
     for (size_t j = 0; j < selected.size(); ++j) {
         report(progress, 75 + static_cast<int>(20 * j / selected.size()), "blend");
         const auto i = selected[j];
-        result.weights[i] = std::move(weights[j]);
-        result.image += images[i].mul(expandWeight(result.weights[i], images.front().channels()));
+        result.weight_maps[i] = std::move(weights[j]);
+        result.image += images[i].mul(expandWeight(result.weight_maps[i], images.front().channels()));
     }
-    result.focus_indices = dominantIndices(result.weights);
+    result.source_index_map = dominantIndices(result.weight_maps);
     return result;
+}
+
+} // 匿名命名空间
+
+/// 在本文件绑定参数校验和执行；注册表只需显式引用这个函数。
+void registerGfgFgfFusionMethod() {
+    registerFusionMethod(validateGfgFgfOptions, gfgFgfFusion);
 }
 
 } // 命名空间 mif::detail::fusion

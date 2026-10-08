@@ -7,10 +7,10 @@
 
 namespace mif::detail::fusion {
 
-void validateFocusOptions(const FocusOptions& options) {
+void validateFocusOptions(const FocusMeasureOptions& options) {
     if (options.measure != FocusMeasure::ModifiedLaplacian && options.measure != FocusMeasure::Tenengrad)
         throw std::invalid_argument("Unknown focus measure");
-    if (options.window < 1 || options.window > 255 || options.window % 2 == 0)
+    if (options.window_size < 1 || options.window_size > 255 || options.window_size % 2 == 0)
         throw std::invalid_argument("Focus window must be odd and within [1, 255]");
 }
 
@@ -36,14 +36,14 @@ cv::Mat focusMeasure(const cv::Mat& gray, FocusMeasure method, int window) {
 }
 
 FocusMaps prepareFocusMaps(const std::vector<cv::Mat>& images,
-                           const FocusOptions& options, const ProgressCallback& progress) {
+                           const FocusMeasureOptions& options, const ProgressCallback& progress) {
     FocusMaps maps;
     std::vector<cv::Mat> scores;
     // 彩色图仅用灰度比较清晰度和引导权重；各方法的重建仍使用全部颜色通道。
     for (size_t i = 0; i < images.size(); ++i) {
         report(progress, 30 + static_cast<int>(20 * i / images.size()), "focus");
         maps.guides.push_back(grayscale(images[i]));
-        scores.push_back(focusMeasure(maps.guides.back(), options.measure, options.window));
+        scores.push_back(focusMeasure(maps.guides.back(), options.measure, options.window_size));
     }
     maps.decisions = decisionWeights(scores);
     // 生成决策后不再需要清晰度响应，及时释放其图像缓冲区，降低多图融合的峰值内存。

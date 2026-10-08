@@ -91,7 +91,7 @@ void checkOutput(const mif::FusionResult& result, const cv::Mat& input) {
     require(result.image.size() == input.size() && result.image.type() == input.type(),
             "DTCWT output size or depth changed");
     require(cv::checkRange(result.image), "DTCWT output contains nonfinite values");
-    require(result.focus_indices.empty() && result.weights.empty(),
+    require(result.source_index_map.empty() && result.weight_maps.empty(),
             "DTCWT unexpectedly returned spatial diagnostics");
 }
 
@@ -129,9 +129,8 @@ void testDtcwtTransform() {
 }
 
 void testDtcwtFusion() {
-    mif::FusionOptions options;
-    options.method = mif::FusionMethod::Dtcwt;
-    options.keep_weight_maps = true;
+    mif::DtcwtFusionOptions options;
+    options.include_weight_maps = true;
     cv::RNG random(74471);
     // 16 位样本含非 257 倍数数值，能暴露内部误用 8 位图导致的量化损失。
     for (int type : {CV_8UC1, CV_16UC1, CV_32FC1, CV_8UC3, CV_16UC3, CV_32FC3}) {
@@ -173,8 +172,8 @@ void testDtcwtFusion() {
                 "DTCWT did not combine all three focused regions");
 
     // 常量没有高频，结果必须是全部输入低频的算术均值，而非顺序二元均值。
-    options.dtcwt.levels = 16;
-    options.dtcwt.activity_window = 31;
+    options.max_levels = 16;
+    options.activity_window_size = 31;
     const std::vector<cv::Mat> constants = {
         cv::Mat(3, 5, CV_32F, cv::Scalar(0.1)), cv::Mat(3, 5, CV_32F, cv::Scalar(0.4)),
         cv::Mat(3, 5, CV_32F, cv::Scalar(0.7))};
@@ -184,11 +183,10 @@ void testDtcwtFusion() {
 }
 
 void testDtcwtOptions() {
-    mif::FusionOptions options;
-    options.method = mif::FusionMethod::Dtcwt;
-    require(options.dtcwt.levels == 4 && options.dtcwt.activity_window == 3, "DTCWT defaults changed");
+    mif::DtcwtFusionOptions options;
+    require(options.max_levels == 4 && options.activity_window_size == 3, "DTCWT defaults changed");
     const auto images = focusStack(texture(65, 97));
-    const auto rejects = [&](const mif::FusionOptions& invalid) {
+    const auto rejects = [&](const mif::DtcwtFusionOptions& invalid) {
         bool rejected = false;
         try { (void)mif::fuse(images, invalid); }
         catch (const std::invalid_argument&) { rejected = true; }
@@ -196,26 +194,24 @@ void testDtcwtOptions() {
     };
     for (int levels : {0, 17}) {
         auto invalid = options;
-        invalid.dtcwt.levels = levels;
+        invalid.max_levels = levels;
         rejects(invalid);
     }
     for (int window : {0, 2, 32, 33}) {
         auto invalid = options;
-        invalid.dtcwt.activity_window = window;
+        invalid.activity_window_size = window;
         rejects(invalid);
     }
-    // 只校验所选方法；其他方法的非法配置不能干扰独立的双树复小波设置。
-    options.guided_filter.base_radius = 0;
-    options.laplacian_pyramid.levels = 0;
-    options.dtcwt.levels = 2;
-    options.dtcwt.activity_window = 1;
+    // 各参数对象独立；双树复小波的非法参数不能影响另一次默认引导滤波调用。
+    options.max_levels = 2;
+    options.activity_window_size = 1;
     checkOutput(mif::fuse(images, options), images.front());
     options = {};
-    options.dtcwt.levels = 0;
-    require(!mif::fuse(images, options).image.empty(), "Inactive DTCWT options were validated");
+    options.max_levels = 0;
+    require(!mif::fuse(images).image.empty(), "Independent default fusion failed");
+    rejects(options);
 
     options = {};
-    options.method = mif::FusionMethod::Dtcwt;
     int last = -1;
     bool saw_wavelet = false;
     (void)mif::fuse(images, options, [&](int percent, const std::string& stage) {
