@@ -11,7 +11,16 @@ add_executable(mif_tests test_fusion.cpp test_focus_measure.cpp test_registratio
     "${PROJECT_SOURCE_DIR}/algorithms/src/fusion/dtcwt/transform.cpp")
 target_include_directories(mif_tests PRIVATE "${PROJECT_SOURCE_DIR}/algorithms/src")
 target_link_libraries(mif_tests PRIVATE mif::core)
-foreach(case registry registry_concurrency registration_registry focus quality identity validation method_options weights cancellation alignment registration_homography registration_ecc registration_failure pipeline large_stack dct gfgfgf gfgfgf_paper fast_guided_filter dtcwt_transform dtcwt_fusion dtcwt_options guided_filter_numerics)
+# 真实性能比较使用独立进程与原始图片，仅显式构建，不纳入日常构建和 CTest。
+add_executable(mif_benchmark EXCLUDE_FROM_ALL benchmark_fusion.cpp)
+target_link_libraries(mif_benchmark PRIVATE mif::core)
+target_compile_definitions(mif_benchmark PRIVATE
+    MIF_BENCHMARK_PROJECT_VERSION="${PROJECT_VERSION}"
+    MIF_BENCHMARK_CONFIGURATION="$<CONFIG>")
+if(WIN32)
+    target_link_libraries(mif_benchmark PRIVATE psapi)
+endif()
+foreach(case registry registry_concurrency registration_registry focus quality identity validation method_options weights cancellation alignment registration_homography registration_ecc registration_failure pipeline large_stack dct gfgfgf gfgfgf_priority fast_guided_filter dtcwt_transform dtcwt_fusion dtcwt_options guided_filter_numerics)
     # 每个场景单独注册，CTest 可以精确指出哪个算法性质发生退化。
     add_test(NAME core.${case} COMMAND mif_tests ${case})
 endforeach()

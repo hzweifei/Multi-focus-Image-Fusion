@@ -161,23 +161,21 @@ void alignNormalized(std::vector<cv::Mat>& images, const RegistrationOptionsBase
 }
 
 } // 匿名命名空间
-} // 命名空间 mif::detail::registration
 
-namespace mif {
-
-RegistrationResult registerImages(const std::vector<cv::Mat>& inputs, const RegistrationOptionsBase& options,
-                                  const ProgressCallback& progress) {
+RegistrationResult registerImagesInternal(const std::vector<cv::Mat>& inputs, const RegistrationOptionsBase& options,
+                                         const ProgressCallback& progress, bool borrow_copy_only_inputs) {
     detail::validateImages(inputs);
     detail::registration::validateCommonOptions(options);
     const auto method = detail::registration::findRegistrationMethod(options);
     method.validate(options);
     RegistrationResult result;
     if (method.copy_only) {
-        // 跳过估计与重采样，但仍返回独立数据，调用者可以安全修改结果而不影响输入。
+        // 仅组合流程可以借用输入；公开配准始终克隆，允许调用者独立修改返回图像。
+        // 两种策略都经过相同注册项校验与逐帧进度，不能按具体配置类型绕过公共流程。
         result.crop_region = {0, 0, inputs.front().cols, inputs.front().rows};
         for (size_t i = 0; i < inputs.size(); ++i) {
             detail::report(progress, static_cast<int>(10 * i / inputs.size()), "prepare");
-            result.images.push_back(inputs[i].clone());
+            result.images.push_back(borrow_copy_only_inputs ? inputs[i] : inputs[i].clone());
             result.transforms.push_back(cv::Mat::eye(2, 3, CV_32F));
         }
     } else {
@@ -197,6 +195,15 @@ RegistrationResult registerImages(const std::vector<cv::Mat>& inputs, const Regi
     if (method.copy_only) detail::report(progress, 95, "finish");
     detail::report(progress, 100, "done");
     return result;
+}
+
+} // 命名空间 mif::detail::registration
+
+namespace mif {
+
+RegistrationResult registerImages(const std::vector<cv::Mat>& inputs, const RegistrationOptionsBase& options,
+                                  const ProgressCallback& progress) {
+    return detail::registration::registerImagesInternal(inputs, options, progress, false);
 }
 
 } // 命名空间 mif

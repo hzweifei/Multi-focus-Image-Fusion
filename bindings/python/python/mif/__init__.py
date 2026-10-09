@@ -28,7 +28,7 @@ __all__ = [
     "EccRegistrationOptions", "SiftRegistrationOptions",
     "fuse", "fuse_detailed", "register_images", "register_and_fuse",
 ]
-__version__ = "0.2.0rc1"
+__version__ = "0.2.0rc2"
 
 
 def _prepare(images):
@@ -67,8 +67,9 @@ def fuse(images, options=None):
         所有方法继承 include_weight_maps，默认为 False。
 
     所有引导滤波 epsilon 须在 [1e-6, float32 最大有限值]。
-    GFG-FGF 的 selection_ratio 默认 0 保留全部帧；gfg_threshold 是梯度阈值，
-    弱梯度位置使用均值残差；guided_subsample_factor 范围 [1,16]，默认 4。
+    GFG-FGF 的 selection_ratio 默认 0 保留全部帧；G、R 分别引导滤波。
+    原始 G 达到 gfg_threshold 的帧优先参与比较，全部未达标时才比较 R 路。
+    guided_subsample_factor 范围 [1,16]，默认 4。
 
     接受非连续切片和只读数组。C++ 在释放 GIL 前复制输入并克隆具体参数，
     计算期间修改 Python 参数不会影响本次调用。输出保留输入尺寸、通道和精度，

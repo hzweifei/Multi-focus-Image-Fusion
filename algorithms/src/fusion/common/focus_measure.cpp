@@ -1,5 +1,6 @@
 #include "fusion/common/focus_measure.hpp"
 #include "fusion/common/weight_map.hpp"
+#include "fusion/common/parallel_frames.hpp"
 #include "common/grayscale.hpp"
 #include "common/progress.hpp"
 #include <opencv2/imgproc.hpp>
@@ -38,13 +39,16 @@ cv::Mat focusMeasure(const cv::Mat& gray, FocusMeasure method, int window) {
 FocusMaps prepareFocusMaps(const std::vector<cv::Mat>& images,
                            const FocusMeasureOptions& options, const ProgressCallback& progress) {
     FocusMaps maps;
-    std::vector<cv::Mat> scores;
+    maps.guides.resize(images.size());
+    std::vector<cv::Mat> scores(images.size());
     // 彩色图仅用灰度比较清晰度和引导权重；各方法的重建仍使用全部颜色通道。
-    for (size_t i = 0; i < images.size(); ++i) {
+    // 各帧只写预分配的对应位置，决策与后续归一化仍按原输入顺序执行。
+    parallelFrames(images.size(), images.front().size(), [&](size_t i) {
         report(progress, 30 + static_cast<int>(20 * i / images.size()), "focus");
-        maps.guides.push_back(grayscale(images[i]));
-        scores.push_back(focusMeasure(maps.guides.back(), options.measure, options.window_size));
-    }
+    }, [&](size_t i) {
+        maps.guides[i] = grayscale(images[i]);
+        scores[i] = focusMeasure(maps.guides[i], options.measure, options.window_size);
+    });
     maps.decisions = decisionWeights(scores);
     // 生成决策后不再需要清晰度响应，及时释放其图像缓冲区，降低多图融合的峰值内存。
     scores.clear();

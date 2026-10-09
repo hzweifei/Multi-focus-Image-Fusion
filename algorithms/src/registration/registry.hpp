@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mif/export.hpp>
+#include <mif/progress.hpp>
 #include <mif/registration/options_base.hpp>
 #include <opencv2/core.hpp>
 #include <functional>
@@ -9,8 +10,19 @@
 #include <typeindex>
 #include <type_traits>
 #include <utility>
+#include <vector>
+
+namespace mif { struct RegistrationResult; }
 
 namespace mif::detail::registration {
+
+/// 公开配准与组合流程共用的入口，始终执行同一套校验、进度和异常处理。
+/// borrow_copy_only_inputs 仅供组合流程设为 true：copy_only 方法只复制 Mat 头，
+/// 输入须在后续融合完成前保持有效且不被修改；fuse 会另建独立的归一化工作图。
+/// 公开 registerImages 必须传 false，继续保证所有返回图像都有独立像素存储。
+/// 实际执行几何配准时，此策略不生效，仍保留原位深恢复及整数舍入过程。
+RegistrationResult registerImagesInternal(const std::vector<cv::Mat>& inputs,
+    const RegistrationOptionsBase& options, const ProgressCallback& progress, bool borrow_copy_only_inputs);
 
 /// 内部变换估计接口：每次配准创建一个对象，可以缓存参考图或参考特征。
 /// 输入为工作分辨率下、同尺寸的 CV_32FC1 灰度图，值域 [0, 1]。
@@ -27,7 +39,8 @@ public:
 };
 
 /// 注册项按值取得后在锁外执行；校验器和工厂不得持有一次调用之外的可变求解状态。
-/// copy_only 只表示独立复制输入；否则必须提供每次创建新估计器的工厂。
+/// copy_only 表示保持原像素，公开入口返回独立副本，组合流程可临时借用输入。
+/// 其他方法必须提供每次创建新估计器的工厂。
 struct RegistrationMethodEntry {
     std::function<void(const RegistrationOptionsBase&)> validate;
     std::function<std::unique_ptr<Estimator>(const cv::Mat&, const RegistrationOptionsBase&)> create;

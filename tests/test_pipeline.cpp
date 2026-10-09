@@ -1,4 +1,5 @@
 #include "fixtures.hpp"
+#include "registration/registry.hpp"
 #include <mif/pipeline.hpp>
 #include <utility>
 
@@ -14,9 +15,152 @@ void equalResults(const mif::FusionResult& a, const mif::FusionResult& b) {
         require(cv::norm(a.weight_maps[i], b.weight_maps[i], cv::NORM_INF) == 0, "Pipeline changed weight maps");
 }
 
+// 自定义复制方法验证优化由注册项能力决定，不依赖 NoRegistrationOptions 的具体类型。
+struct CopyOnlyOptions : mif::RegistrationOptionsBase {
+    bool reject = false;
+    std::unique_ptr<mif::RegistrationOptionsBase> clone() const override {
+        return std::make_unique<CopyOnlyOptions>(*this);
+    }
+};
+struct UnknownCopyOptions final : CopyOnlyOptions {
+    std::unique_ptr<mif::RegistrationOptionsBase> clone() const override {
+        return std::make_unique<UnknownCopyOptions>(*this);
+    }
+};
+void validateCopyOnly(const CopyOnlyOptions& options) {
+    if (options.reject) throw std::invalid_argument("copy-only validation sentinel");
+}
+
+// 显式两步仍使用公开配准的独立副本；进度只换算坐标，作为组合流程的行为参照。
+mif::PipelineResult explicitPipeline(const std::vector<cv::Mat>& images,
+    const mif::RegistrationOptionsBase& registration, const mif::FusionOptionsBase& fusion,
+    const mif::ProgressCallback& progress) {
+    auto registered = mif::registerImages(images, registration, [&](int percent, const std::string& stage) {
+        return progress(percent * 40 / 100, stage == "done" ? "align" : stage);
+    });
+    mif::PipelineResult result;
+    result.fusion = mif::fuse(registered.images, fusion, [&](int percent, const std::string& stage) {
+        return progress(40 + percent * 60 / 100, stage);
+    });
+    result.crop_region = registered.crop_region;
+    result.transforms = std::move(registered.transforms);
+    return result;
+}
+
+void testCopyOnlyPipeline() {
+    mif::detail::registration::registerRegistrationCopyMethod(validateCopyOnly);
+    const mif::NoRegistrationOptions disabled;
+    const CopyOnlyOptions custom;
+    mif::GuidedFilterFusionOptions fusion;
+    fusion.include_weight_maps = true;
+    using Event = std::pair<int, std::string>;
+    using Trace = std::vector<Event>;
+    for (const int depth : {CV_8U, CV_16U, CV_32F}) {
+        for (const int channels : {1, 3}) {
+            // 非连续 ROI 覆盖借用 Mat 时的步长；整数与浮点都须保持原始像素。
+            auto stack = focusStack(texture(41, 57));
+            std::vector<cv::Mat> images, originals;
+            for (auto& image : stack) {
+                if (channels == 3) cv::cvtColor(image, image, cv::COLOR_GRAY2BGR);
+                image.convertTo(image, depth, depth == CV_16U ? 257.0 : depth == CV_32F ? 1.0 / 255.0 : 1.0);
+                images.push_back(image(cv::Rect(2, 2, 53, 37)));
+                originals.push_back(images.back().clone());
+            }
+            require(!images.front().isContinuous(), "Pipeline ROI fixture must be strided");
+            for (const auto* registration : std::vector<const mif::RegistrationOptionsBase*>{&disabled, &custom}) {
+                Trace expected_trace, actual_trace;
+                const auto separate = explicitPipeline(images, *registration, fusion, [&](int percent, const std::string& stage) {
+                    expected_trace.emplace_back(percent, stage); return true;
+                });
+                auto combined = mif::registerAndFuse(images, *registration, fusion, [&](int percent, const std::string& stage) {
+                    actual_trace.emplace_back(percent, stage); return true;
+                });
+                equalResults(combined.fusion, separate.fusion);
+                require(combined.fusion.weight_maps.size() == images.size() && !combined.fusion.source_index_map.empty(),
+                        "Copy-only pipeline test requires complete fusion diagnostics");
+                require(actual_trace == expected_trace, "Copy-only pipeline changed progress order or values");
+                require(combined.crop_region == separate.crop_region && combined.transforms.size() == images.size(),
+                        "Copy-only pipeline changed registration metadata");
+                for (size_t i = 0; i < images.size(); ++i)
+                    require(cv::norm(combined.transforms[i], separate.transforms[i], cv::NORM_INF) == 0,
+                            "Copy-only pipeline changed identity transforms");
+
+                // 公开独立配准的缓冲区仍可修改；组合结果及诊断也不能反向修改输入。
+                auto registered = mif::registerImages(images, *registration);
+                for (size_t i = 0; i < images.size(); ++i) {
+                    require(registered.images[i].data != images[i].data, "Public copy-only registration borrowed input");
+                    registered.images[i].setTo(0);
+                }
+                combined.fusion.image.setTo(0);
+                combined.fusion.source_index_map.setTo(-1);
+                for (auto& weight : combined.fusion.weight_maps) weight.setTo(0);
+                for (size_t i = 0; i < images.size(); ++i)
+                    require(cv::norm(images[i], originals[i], cv::NORM_INF) == 0,
+                            "Copy-only pipeline or returned buffers modified input");
+            }
+        }
+    }
+
+    const auto images = focusStack(texture(25, 37));
+    Trace expected_trace;
+    explicitPipeline(images, custom, fusion, [&](int percent, const std::string& stage) {
+        expected_trace.emplace_back(percent, stage); return true;
+    });
+    // 在每个原有回调点分别取消和抛出异常，包含配准结束与融合开始的交界。
+    struct CallbackFailure : std::runtime_error { using std::runtime_error::runtime_error; };
+    for (size_t stop = 0; stop < expected_trace.size(); ++stop) {
+        for (const bool throw_error : {false, true}) {
+            Trace actual_trace;
+            bool stopped = false;
+            try {
+                mif::registerAndFuse(images, custom, fusion, [&](int percent, const std::string& stage) {
+                    actual_trace.emplace_back(percent, stage);
+                    if (actual_trace.size() != stop + 1) return true;
+                    if (throw_error) throw CallbackFailure("copy-only callback sentinel");
+                    return false;
+                });
+            } catch (const mif::Cancelled&) { stopped = !throw_error; }
+            catch (const CallbackFailure& error) {
+                stopped = throw_error && std::string(error.what()) == "copy-only callback sentinel";
+            }
+            require(stopped && actual_trace == Trace(expected_trace.begin(), expected_trace.begin() + stop + 1),
+                    "Copy-only pipeline changed cancellation or callback exception behavior");
+        }
+    }
+
+    // 校验失败的类型、消息和此前进度须与公开两步一致，防止快速路径绕过任何校验。
+    auto equalFailure = [&](const std::vector<cv::Mat>& inputs, const mif::RegistrationOptionsBase& registration,
+                            const mif::FusionOptionsBase& options) {
+        Trace traces[2];
+        std::string errors[2];
+        for (int mode = 0; mode < 2; ++mode) {
+            const auto progress = [&](int percent, const std::string& stage) {
+                traces[mode].emplace_back(percent, stage); return true;
+            };
+            try {
+                if (mode == 0) explicitPipeline(inputs, registration, options, progress);
+                else mif::registerAndFuse(inputs, registration, options, progress);
+            } catch (const std::invalid_argument& error) { errors[mode] = error.what(); }
+        }
+        require(!errors[0].empty() && errors[0] == errors[1] && traces[0] == traces[1],
+                "Copy-only pipeline changed validation order, error or progress");
+    };
+    CopyOnlyOptions invalid_common, invalid_method;
+    invalid_common.max_working_dimension = 0;
+    invalid_method.reject = true;
+    mif::GuidedFilterFusionOptions invalid_fusion;
+    invalid_fusion.focus.window_size = 0;
+    equalFailure({}, invalid_common, invalid_fusion);
+    equalFailure(images, invalid_common, invalid_fusion);
+    equalFailure(images, UnknownCopyOptions{}, fusion);
+    equalFailure(images, invalid_method, invalid_fusion);
+    equalFailure(images, custom, invalid_fusion);
+}
+
 } // 匿名命名空间
 
 void testPipeline() {
+    testCopyOnlyPipeline();
     // 同一批次使用分数像素位移，覆盖整数重采样量化及浮点两种情况。
     const auto reference = texture(97, 129);
     cv::Mat shifted;

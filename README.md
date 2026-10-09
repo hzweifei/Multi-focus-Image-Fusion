@@ -6,7 +6,7 @@
 ## 功能
 
 - 五种传统融合方法：双尺度引导滤波（GFF）、拉普拉斯金字塔、块方差（参考项目称 DCT）、DTCWT 双树复小波、GFG-FGF。
-  各方法独立配置；GFF 和金字塔使用 OpenCV `ximgproc`，GFG-FGF 按论文实现四邻域聚焦度量、Sobel 平局处理与快速引导滤波。
+  各方法独立配置；GFF 和金字塔使用 OpenCV `ximgproc`，GFG-FGF 使用论文中的聚焦度量，并采用自定义的 G 优先决策和两阶段快速引导滤波。
 - 可选 ECC 配准（平移 / 仿射 / 单应性）或 SIFT + RANSAC 单应性配准，自动裁剪共同有效区域。
   配准与融合可独立调用，也可一步完成。
 - 支持灰度 / BGR、8 位和 16 位无符号整数、`[0,1]` float32；输出保留输入位深与通道数。
@@ -118,11 +118,13 @@ fused = result["image"]  # NumPy；彩色为 BGR
 `mif.register_images()` 仅配准。DTCWT 没有单一空间来源图，`source_index_map=None`、`weight_maps=[]`。
 配置、所有权和返回字典见 [Python 接口](bindings/python/README.md)。
 
-采用论文《多聚焦显微图像融合算法》的流程时，使用 `GfgFgfFusionOptions`。
-该方法默认保留全部焦面（`selection_ratio=0`），使用类高斯四邻域梯度和均值残差生成聚焦图，
-经快速引导滤波、跨焦面最大值及 Sobel 平局判断后细化融合权重。
+使用 G 优先的 GFG-FGF 方法时，选择 `GfgFgfFusionOptions`。
+该方法默认保留全部焦面（`selection_ratio=0`），分别滤波四邻域响应 G 和均值残差 R。
+每个位置只要有原始 G 达到阈值的焦面，就在这些焦面中比较滤波后的 G；全部未达阈值时才比较滤波后的 R。
+同类响应并列时使用 Sobel 消歧，再滤波决策图、归一化权重并融合原图。
+这是基于《多聚焦显微图像融合算法》的自定义改进；第二阶段仍会平滑来源边界。
 `guided_subsample_factor=4` 控制快速滤波的下采样倍数，设为 1 可使用完整分辨率。
-项目参数默认值、论文未给出的设置和数值处理差异见 [GFG-FGF 算法说明](docs/algorithm.md#45-gfg-fgf四邻域聚焦度量与两次快速引导滤波)。
+完整流程、参数和与论文的差异见 [GFG-FGF 算法说明](docs/algorithm.md#45-gfg-fgfg-优先与两阶段快速引导滤波)。
 
 当前整栈驻留内存，尚未实现大图分块、批量任务或安装包。真实采集图像的效果仍需评估，
 来源索引不能当作物理深度；测试范围见 [验证指南](docs/verification.md)。第三方许可见

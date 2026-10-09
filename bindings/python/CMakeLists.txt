@@ -1,5 +1,5 @@
-# 模块入口与接口注册放在同一个文件；数组转换单独维护，集中处理内存所有权。
-nanobind_add_module(_mif src/bindings.cpp src/array_utils.cpp)
+# 模块入口、接口注册与数组转换集中在同一个文件，转换工具仅在文件内使用。
+nanobind_add_module(_mif src/bindings.cpp)
 target_link_libraries(_mif PRIVATE mif::core)
 # 开发时让纯 Python 包和扩展模块位于同一目录；交付时再按配置复制到 outputs。
 set(MIF_PYTHON_OUTPUT "${CMAKE_BINARY_DIR}/python/mif")

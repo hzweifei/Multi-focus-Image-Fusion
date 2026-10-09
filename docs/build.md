@@ -163,7 +163,7 @@ GitHub Release 附件使用完整的便携 ZIP。使用者解压后运行 `mif_d
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 `
-  -Version v0.2.0-preview.1 `
+  -Version v0.2.0-preview.2 `
   -ExpectedCommit (git rev-parse HEAD) `
   -RuntimeDirectory '<Visual Studio>/VC/Redist/MSVC/<版本>/x64/Microsoft.VC143.CRT' `
   -AdditionalNoticesDirectory 'outputs/release-notices' `

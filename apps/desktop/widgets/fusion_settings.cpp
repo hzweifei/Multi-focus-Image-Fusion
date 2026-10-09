@@ -215,14 +215,14 @@ FusionSettings::FusionSettings(QWidget* parent) : QGroupBox(parent) {
     gfg_fgf_.gfg_threshold = createRatio(gfg_fgf_.panel, QStringLiteral("gfgfgfDifferenceThreshold"),
                                               gfg_defaults.gfg_threshold, 0.001);
     gfg_fgf_.gfg_threshold->setToolTip(QStringLiteral(
-        "范围：0–1。类高斯四邻域梯度达到此阈值时采用梯度响应。\n"
-        "较弱的响应改用图像与局部均值之差；输入在 [0,1] 范围内计算。"));
+        "范围：0–1。原始梯度达到此阈值的图片优先参与当前位置的清晰度比较。\n"
+        "只有全部图片都未达到阈值，才比较均值残差；两路评分分别滤波后比较。"));
     addParameter(gfg_fgf_form, QStringLiteral("梯度阈值"), gfg_fgf_.gfg_threshold, label_width);
     gfg_fgf_.guided_radius = createRadius(gfg_fgf_.panel, QStringLiteral("gfgfgfGuidedRadius"),
                                         gfg_defaults.guided_radius);
     gfg_fgf_.guided_radius->setToolTip(QStringLiteral(
-        "范围：1–255 px。两次快速引导滤波共用半径，按原图像素计。\n"
-        "先优化聚焦响应，再优化融合权重。"));
+        "范围：1–255 px。两阶段快速引导滤波共用半径，按原图像素计。\n"
+        "先分别优化梯度与均值残差，再优化融合权重。"));
     addParameter(gfg_fgf_form, QStringLiteral("引导半径"), gfg_fgf_.guided_radius, label_width);
     gfg_fgf_.guided_epsilon = createEpsilon(gfg_fgf_.panel, QStringLiteral("gfgfgfGuidedEpsilon"),
                                           gfg_defaults.guided_epsilon);
@@ -318,7 +318,7 @@ void FusionSettings::updateMethodVisibility() {
         method_hint_->setText(QStringLiteral("用双树复小波比较各尺度、各方向的细节，再重建图像。"));
         break;
     case FusionMethod::GfgFgf:
-        method_hint_->setText(QStringLiteral("用类高斯四邻域梯度估计清晰度，经两次快速引导滤波融合；筛帧默认关闭。"));
+        method_hint_->setText(QStringLiteral("优先比较梯度达标的图片，全部未达标时比较均值残差，再平滑权重融合；筛帧默认关闭。"));
         break;
     }
 }

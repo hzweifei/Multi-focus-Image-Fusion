@@ -88,8 +88,11 @@ SIFT 固定估计单应性；ECC 支持 `Translation`、`Affine`、`Homography`�
 窗口名以 `window_size` 结尾时表示边长，`radius` 表示半径。块方差的一致性窗口
 以块为单位，小波活动度窗口以子带采样点为单位，详见对应头文件。
 
-GFG-FGF 默认 `selection_ratio=0` 保留全部输入；`gfg_threshold=0.005` 是 GFG 响应阈值，
-弱响应回退到局部均值残差。`guided_subsample_factor=4` 控制快速滤波下采样，1 表示全分辨率。
+GFG-FGF 默认 `selection_ratio=0` 保留全部输入，采用自定义的 G 优先决策。
+`gfg_threshold=0.005` 是原始四邻域响应 G 的候选资格阈值，包含等号。
+G、均值残差 R 分别做第一阶段滤波：同一位置只要有 G 候选，就只比较这些帧的 G 路响应；
+全部未达阈值时才比较 R 路响应。第二阶段仍对决策图滤波，因此最终边界权重可能包含该位置的 R 候选。
+`guided_subsample_factor=4` 控制两阶段快速滤波的下采样，1 表示全分辨率。
 GFF/金字塔的引导滤波使用 OpenCV `ximgproc`；GFG-FGF 使用项目的快速引导滤波实现。
 各方法引导滤波正则项要求为 `[1e-6, FLT_MAX]` 内的有限值；ECC 的
 `convergence_tolerance` 是独立的收敛阈值。完整默认值、单位和边界见 [算法说明](algorithm.md)。
@@ -119,6 +122,8 @@ None/ECC 平移与仿射返回 2×3 float32 矩阵，ECC 单应性/SIFT 返回 3
 结果不引用输入缓冲区，但复制结果结构会共享 `cv::Mat` 数据；需要独立可写副本时使用 `clone()`。
 进度回调在调用线程同步执行，返回 `false` 抛出 `mif::Cancelled`，回调自身异常原样传播。
 取消只在检查点生效，不能中断正在执行的单次 OpenCV 操作。
+帧间独立计算可能以小批次并行执行；该批进度由调用线程按帧序预先报告。
+工作线程不调用用户回调，已启动的批次全部结束后才返回或抛出异常。
 
 ## 头文件与扩展
 

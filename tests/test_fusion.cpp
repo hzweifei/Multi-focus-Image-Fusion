@@ -24,7 +24,7 @@ void testDtcwtTransform();
 void testDtcwtFusion();
 void testDtcwtOptions();
 void testGuidedFilterNumerics();
-void testGfgfgfPaper();
+void testGfgfgfPriority();
 void testFastGuidedFilter();
 namespace {
 template<class Action>
@@ -331,7 +331,7 @@ int main(int argc, char** argv) {
         {"large_stack", largeStack}, {"dct", testDctFusion}, {"gfgfgf", testGfgfgfFusion},
         {"dtcwt_transform", testDtcwtTransform}, {"dtcwt_fusion", testDtcwtFusion}, {"dtcwt_options", testDtcwtOptions},
         {"guided_filter_numerics", testGuidedFilterNumerics},
-        {"gfgfgf_paper", testGfgfgfPaper}, {"fast_guided_filter", testFastGuidedFilter}};
+        {"gfgfgf_priority", testGfgfgfPriority}, {"fast_guided_filter", testFastGuidedFilter}};
     try {
         if (argc != 2 || tests.count(argv[1]) == 0) throw std::runtime_error("Specify a test case");
         tests.at(argv[1])(); std::cout << "PASS " << argv[1] << '\n'; return 0;

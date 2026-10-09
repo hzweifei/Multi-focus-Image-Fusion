@@ -225,7 +225,7 @@ try {
 3. 选择融合算法，调整参数后执行融合，最后保存结果。
 4. 快速测试可只导入 examples/focus_01.png 和 focus_02.png。
    examples/reference.png 是全清晰参考图，请勿加入输入图像栈。
-5. 论文方法可选择“GFG-FGF 梯度融合”；其他算法也可用于对比。
+5. 可选择“GFG-FGF 梯度融合”；其采用项目自定义的 G 优先决策，其他算法也可用于对比。
 
 保留程序旁边的 DLL、platforms、iconengines 和 licenses 文件夹。
 面向 Windows 10/11 x64；包内附带 MSVC x64 运行库，不需要安装 Python 或 OpenCV。

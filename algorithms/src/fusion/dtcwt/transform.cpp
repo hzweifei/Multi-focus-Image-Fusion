@@ -28,6 +28,18 @@ constexpr std::array<double, 10> qshift_low_a = {
     -0.006181881892116438};
 constexpr double inverse_sqrt_two = 0.70710678118654752440;
 
+/// 只把互不写入同一像素的范围交给 OpenCV 线程池；小图和粗尺度直接顺序执行。
+/// 每次调用返回后所有范围均已完成，因此层间 checkpoint 仍由原调用线程执行。
+template<class Operation>
+void independentRanges(int extent, std::size_t pixels, const Operation& operation) {
+    constexpr std::size_t minimum_parallel_pixels = 256 * 256;
+    const cv::Range range(0, extent);
+    if (extent < 2 || pixels < minimum_parallel_pixels || cv::getNumThreads() == 1)
+        operation(range);
+    else
+        cv::parallel_for_(range, operation);
+}
+
 /// 关于像素边缘的对称延拓，端点重复；取模也支持小于滤波器长度的极小图像。
 int reflected(int index, int length) {
     const int period = 2 * length;
@@ -41,14 +53,17 @@ template<std::size_t Length>
 cv::Mat symmetricColumns(const cv::Mat& input, const std::array<double, Length>& filter) {
     cv::Mat output = cv::Mat::zeros(input.size(), CV_64F);
     const int radius = static_cast<int>(Length / 2);
-    for (int y = 0; y < input.rows; ++y) {
-        auto* dst = output.ptr<double>(y);
-        for (int tap = 0; tap < static_cast<int>(Length); ++tap) {
-            const auto* src = input.ptr<double>(reflected(y + radius - tap, input.rows));
-            const double coefficient = filter[static_cast<std::size_t>(tap)];
-            for (int x = 0; x < input.cols; ++x) dst[x] += coefficient * src[x];
+    independentRanges(input.rows, output.total(), [&](const cv::Range& rows) {
+        for (int y = rows.start; y < rows.end; ++y) {
+            auto* dst = output.ptr<double>(y);
+            // 每行独立；仍按原抽头顺序用 double 累加，线程数不改变舍入次序。
+            for (int tap = 0; tap < static_cast<int>(Length); ++tap) {
+                const auto* src = input.ptr<double>(reflected(y + radius - tap, input.rows));
+                const double coefficient = filter[static_cast<std::size_t>(tap)];
+                for (int x = 0; x < input.cols; ++x) dst[x] += coefficient * src[x];
+            }
         }
-    }
+    });
     return output;
 }
 
@@ -66,17 +81,20 @@ double treeCoefficient(bool highpass, int tree, int tap) {
 cv::Mat analyzeColumns(const cv::Mat& input, bool highpass) {
     CV_Assert(input.rows % 4 == 0 && input.type() == CV_64FC1);
     cv::Mat output = cv::Mat::zeros(input.rows / 2, input.cols, CV_64F);
-    for (int group = 0; group < input.rows / 4; ++group) {
-        for (int tree = 0; tree < 2; ++tree) {
-            auto* dst = output.ptr<double>(2 * group + (highpass ? 1 - tree : tree));
-            for (int tap = 0; tap < 10; ++tap) {
-                const int row = reflected(4 * group + 10 + tree - 2 * tap, input.rows);
-                const auto* src = input.ptr<double>(row);
-                const double coefficient = treeCoefficient(highpass, tree, tap);
-                for (int x = 0; x < input.cols; ++x) dst[x] += coefficient * src[x];
+    // 每组只写自己的两个输出行，两个相位树及各抽头的内部顺序保持不变。
+    independentRanges(input.rows / 4, output.total(), [&](const cv::Range& groups) {
+        for (int group = groups.start; group < groups.end; ++group) {
+            for (int tree = 0; tree < 2; ++tree) {
+                auto* dst = output.ptr<double>(2 * group + (highpass ? 1 - tree : tree));
+                for (int tap = 0; tap < 10; ++tap) {
+                    const int row = reflected(4 * group + 10 + tree - 2 * tap, input.rows);
+                    const auto* src = input.ptr<double>(row);
+                    const double coefficient = treeCoefficient(highpass, tree, tap);
+                    for (int x = 0; x < input.cols; ++x) dst[x] += coefficient * src[x];
+                }
             }
         }
-    }
+    });
     return output;
 }
 
@@ -86,19 +104,27 @@ cv::Mat analyzeColumns(const cv::Mat& input, bool highpass) {
 cv::Mat synthesizeColumns(const cv::Mat& lowpass, const cv::Mat& highpass) {
     CV_Assert(lowpass.size() == highpass.size() && lowpass.rows % 2 == 0);
     cv::Mat output = cv::Mat::zeros(2 * lowpass.rows, lowpass.cols, CV_64F);
-    for (int group = 0; group < lowpass.rows / 2; ++group) {
-        for (int tree = 0; tree < 2; ++tree) {
-            const auto* low = lowpass.ptr<double>(2 * group + tree);
-            const auto* high = highpass.ptr<double>(2 * group + 1 - tree);
-            for (int tap = 0; tap < 10; ++tap) {
-                const int row = reflected(4 * group + 10 + tree - 2 * tap, output.rows);
-                auto* dst = output.ptr<double>(row);
-                const double lo = treeCoefficient(false, tree, tap);
-                const double hi = treeCoefficient(true, tree, tap);
-                for (int x = 0; x < output.cols; ++x) dst[x] += lo * low[x] + hi * high[x];
+    // 不同组的反射索引会写到同一行，不能按组并行。改按列条带分配输出像素，
+    // 每个像素仍依次收到原 group -> tree -> tap 的贡献，不使用归约或临时累加图。
+    constexpr int stripe_width = 64;
+    const int stripes = (output.cols + stripe_width - 1) / stripe_width;
+    independentRanges(stripes, output.total(), [&](const cv::Range& columns) {
+        const int first = columns.start * stripe_width;
+        const int last = std::min(output.cols, columns.end * stripe_width);
+        for (int group = 0; group < lowpass.rows / 2; ++group) {
+            for (int tree = 0; tree < 2; ++tree) {
+                const auto* low = lowpass.ptr<double>(2 * group + tree);
+                const auto* high = highpass.ptr<double>(2 * group + 1 - tree);
+                for (int tap = 0; tap < 10; ++tap) {
+                    const int row = reflected(4 * group + 10 + tree - 2 * tap, output.rows);
+                    auto* dst = output.ptr<double>(row);
+                    const double lo = treeCoefficient(false, tree, tap);
+                    const double hi = treeCoefficient(true, tree, tap);
+                    for (int x = first; x < last; ++x) dst[x] += lo * low[x] + hi * high[x];
+                }
             }
         }
-    }
+    });
     return output;
 }
 
@@ -109,36 +135,40 @@ void encodeDirections(const cv::Mat& plane, cv::Mat& positive, cv::Mat& negative
     CV_Assert(plane.rows % 2 == 0 && plane.cols % 2 == 0);
     positive.create(plane.rows / 2, plane.cols / 2, CV_64FC2);
     negative.create(positive.size(), CV_64FC2);
-    for (int y = 0; y < positive.rows; ++y) {
-        const auto* even = plane.ptr<double>(2 * y);
-        const auto* odd = plane.ptr<double>(2 * y + 1);
-        auto* pos = positive.ptr<cv::Vec2d>(y);
-        auto* neg = negative.ptr<cv::Vec2d>(y);
-        for (int x = 0; x < positive.cols; ++x) {
-            const double a = even[2 * x], b = even[2 * x + 1];
-            const double c = odd[2 * x], d = odd[2 * x + 1];
-            pos[x] = cv::Vec2d(a - d, b + c) * inverse_sqrt_two;
-            neg[x] = cv::Vec2d(a + d, b - c) * inverse_sqrt_two;
+    independentRanges(positive.rows, positive.total(), [&](const cv::Range& rows) {
+        for (int y = rows.start; y < rows.end; ++y) {
+            const auto* even = plane.ptr<double>(2 * y);
+            const auto* odd = plane.ptr<double>(2 * y + 1);
+            auto* pos = positive.ptr<cv::Vec2d>(y);
+            auto* neg = negative.ptr<cv::Vec2d>(y);
+            for (int x = 0; x < positive.cols; ++x) {
+                const double a = even[2 * x], b = even[2 * x + 1];
+                const double c = odd[2 * x], d = odd[2 * x + 1];
+                pos[x] = cv::Vec2d(a - d, b + c) * inverse_sqrt_two;
+                neg[x] = cv::Vec2d(a + d, b - c) * inverse_sqrt_two;
+            }
         }
-    }
+    });
 }
 
 /// 上述正交方向组合的逆，恢复四棵实树的交错布局。
 cv::Mat decodeDirections(const cv::Mat& positive, const cv::Mat& negative) {
     CV_Assert(positive.size() == negative.size() && positive.type() == CV_64FC2);
     cv::Mat plane(2 * positive.rows, 2 * positive.cols, CV_64F);
-    for (int y = 0; y < positive.rows; ++y) {
-        const auto* pos = positive.ptr<cv::Vec2d>(y);
-        const auto* neg = negative.ptr<cv::Vec2d>(y);
-        auto* even = plane.ptr<double>(2 * y);
-        auto* odd = plane.ptr<double>(2 * y + 1);
-        for (int x = 0; x < positive.cols; ++x) {
-            even[2 * x] = (pos[x][0] + neg[x][0]) * inverse_sqrt_two;
-            even[2 * x + 1] = (pos[x][1] + neg[x][1]) * inverse_sqrt_two;
-            odd[2 * x] = (pos[x][1] - neg[x][1]) * inverse_sqrt_two;
-            odd[2 * x + 1] = (neg[x][0] - pos[x][0]) * inverse_sqrt_two;
+    independentRanges(positive.rows, plane.total(), [&](const cv::Range& rows) {
+        for (int y = rows.start; y < rows.end; ++y) {
+            const auto* pos = positive.ptr<cv::Vec2d>(y);
+            const auto* neg = negative.ptr<cv::Vec2d>(y);
+            auto* even = plane.ptr<double>(2 * y);
+            auto* odd = plane.ptr<double>(2 * y + 1);
+            for (int x = 0; x < positive.cols; ++x) {
+                even[2 * x] = (pos[x][0] + neg[x][0]) * inverse_sqrt_two;
+                even[2 * x + 1] = (pos[x][1] + neg[x][1]) * inverse_sqrt_two;
+                odd[2 * x] = (pos[x][1] - neg[x][1]) * inverse_sqrt_two;
+                odd[2 * x + 1] = (neg[x][0] - pos[x][0]) * inverse_sqrt_two;
+            }
         }
-    }
+    });
     return plane;
 }
 

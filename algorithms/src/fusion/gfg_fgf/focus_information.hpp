@@ -5,11 +5,19 @@
 
 namespace mif::detail::fusion {
 
-/// 论文公式 (1)-(9)：均值残差和类高斯四邻域梯度按阈值分段选择。
-cv::Mat paperFocusInformation(const cv::Mat& guide, int window, double threshold);
+/// 分别保留论文算子的完整 G、R，以及原始 G 达到阈值的位置（CV_8U，0/255）。
+struct GfgFocusInformation {
+    cv::Mat gradient;
+    cv::Mat residual;
+    cv::Mat gradient_candidates;
+};
 
-/// 跨焦面最大响应；近似平局比较聚焦图的 3x3 Sobel 响应。
-/// 两种响应均无法区分时等权处理，保留平坦区域和相同输入的对称性。
-std::vector<cv::Mat> paperDecisionWeights(const std::vector<cv::Mat>& responses);
+GfgFocusInformation gfgFocusInformation(const cv::Mat& guide, int window, double threshold);
+
+/// G、R 分别滤波后决策：有 G 候选时只比较候选的 G 路，否则比较全部 R 路。
+/// 近似平局比较同一路完整响应的 3x3 Sobel；仍无法区分时等权。
+std::vector<cv::Mat> gfgPriorityDecisionWeights(const std::vector<cv::Mat>& gradient_responses,
+                                               const std::vector<cv::Mat>& residual_responses,
+                                               const std::vector<cv::Mat>& gradient_candidates);
 
 } // 命名空间 mif::detail::fusion

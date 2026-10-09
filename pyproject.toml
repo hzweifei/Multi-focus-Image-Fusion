@@ -6,7 +6,7 @@ build-backend = "scikit_build_core.build"
 [project]
 # 安装包名称可以含连字符，实际导入名称仍为 mif。
 name = "mif-focus-fusion"
-version = "0.2.0rc1"
+version = "0.2.0rc2"
 description = "Traditional multi-focus image fusion with C++ and OpenCV"
 readme = "README.md"
 requires-python = ">=3.9"

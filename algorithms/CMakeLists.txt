@@ -36,6 +36,7 @@ add_library(mif_core ${_mif_library_type}
     src/fusion/fusion.cpp
     src/fusion/common/focus_measure.hpp
     src/fusion/common/focus_measure.cpp
+    src/fusion/common/parallel_frames.hpp
     src/fusion/common/weight_map.hpp
     src/fusion/common/weight_map.cpp
     src/fusion/common/guided_filter.hpp

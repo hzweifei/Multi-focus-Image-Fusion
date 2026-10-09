@@ -4,10 +4,74 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
+#include <thread>
+#include <utility>
 
 namespace {
 
 namespace wavelet = mif::detail::fusion::dtcwt;
+
+/// 线程数是 OpenCV 进程设置；即使断言或调用者回调抛出异常，也恢复测试前的值。
+struct RestoreThreadCount {
+    const int previous = cv::getNumThreads();
+    ~RestoreThreadCount() { cv::setNumThreads(previous); }
+};
+
+/// 逐行按位比较，既检查浮点舍入一致，也支持带额外行跨度的 ROI 输入。
+void requireIdentical(const cv::Mat& actual, const cv::Mat& expected, const char* message) {
+    require(actual.size() == expected.size() && actual.type() == expected.type(), message);
+    const std::size_t row_bytes = actual.cols * actual.elemSize();
+    for (int row = 0; row < actual.rows; ++row)
+        require(std::memcmp(actual.ptr(row), expected.ptr(row), row_bytes) == 0, message);
+}
+
+/// 大图进入并行分支，后续粗尺度进入串行分支；奇数尺寸及非连续输入覆盖边界补齐。
+void checkParallelTransform() {
+    const RestoreThreadCount restore_threads;
+    const auto caller = std::this_thread::get_id();
+    cv::RNG random(17043);
+    for (const cv::Size size : {cv::Size(544, 544), cv::Size(545, 543)}) {
+        cv::Mat storage(size.height + 2, size.width + 4, CV_64F);
+        random.fill(storage, cv::RNG::UNIFORM, -1.0, 1.0);
+        const cv::Mat input = storage(cv::Rect(1, 1, size.width, size.height));
+        const cv::Mat before = input.clone();
+        const auto checkpoint = [&](int& count) {
+            require(std::this_thread::get_id() == caller,
+                    "DTCWT transform checkpoint left the calling thread");
+            ++count;
+        };
+        cv::setNumThreads(1);
+        int forward_calls = 0, inverse_calls = 0;
+        const auto serial = wavelet::forward(input, 5, [&] { checkpoint(forward_calls); });
+        const auto restored = wavelet::inverse(serial, [&] { checkpoint(inverse_calls); });
+        require(forward_calls == 5 && inverse_calls == 5,
+                "DTCWT transform checkpoint count changed");
+        for (const int threads : {2, 4}) {
+            cv::setNumThreads(threads);
+            int parallel_forward_calls = 0, parallel_inverse_calls = 0;
+            const auto parallel = wavelet::forward(input, 5, [&] { checkpoint(parallel_forward_calls); });
+            const auto parallel_restored = wavelet::inverse(parallel, [&] { checkpoint(parallel_inverse_calls); });
+            require(parallel.original_size == serial.original_size &&
+                        parallel.input_sizes == serial.input_sizes &&
+                        parallel.highpass.size() == serial.highpass.size(),
+                    "DTCWT pyramid metadata depends on the thread count");
+            requireIdentical(parallel.lowpass, serial.lowpass,
+                             "DTCWT lowpass depends on the thread count");
+            for (std::size_t level = 0; level < serial.highpass.size(); ++level)
+                for (std::size_t direction = 0; direction < serial.highpass[level].size(); ++direction)
+                    requireIdentical(parallel.highpass[level][direction], serial.highpass[level][direction],
+                                     "DTCWT complex coefficients depend on the thread count");
+            requireIdentical(parallel_restored, restored,
+                             "DTCWT reconstruction depends on the thread count");
+            require(parallel_forward_calls == forward_calls && parallel_inverse_calls == inverse_calls,
+                    "DTCWT checkpoint count depends on the thread count");
+        }
+        require(cv::norm(input, restored, cv::NORM_INF) < 3e-12,
+                "DTCWT large parallel round trip failed");
+        requireIdentical(input, before, "DTCWT parallel transform modified its input");
+    }
+}
 
 /// 可重复的非对称样本，不依赖随机数库版本，用于核对首层及后续 Q-shift 相位。
 cv::Mat oracleImage() {
@@ -95,6 +159,85 @@ void checkOutput(const mif::FusionResult& result, const cv::Mat& input) {
             "DTCWT unexpectedly returned spatial diagnostics");
 }
 
+/// 变换内的并行不改变多帧依次融合、调用线程回调及中断语义。
+void checkParallelFusion() {
+    const RestoreThreadCount restore_threads;
+    const auto caller = std::this_thread::get_id();
+    cv::RNG random(91933);
+    std::vector<cv::Mat> images, originals;
+    for (int frame = 0; frame < 3; ++frame) {
+        cv::Mat image(543, 545, CV_32FC3);
+        random.fill(image, cv::RNG::UNIFORM, 0.05, 0.95);
+        images.push_back(image);
+        originals.push_back(image.clone());
+    }
+    mif::DtcwtFusionOptions options;
+    options.include_weight_maps = true;
+    using ProgressTrace = std::vector<std::pair<int, std::string>>;
+    const auto check_thread = [&] {
+        require(std::this_thread::get_id() == caller,
+                "DTCWT fusion callback left the calling thread");
+    };
+    const auto run = [&](int threads, ProgressTrace& trace) {
+        cv::setNumThreads(threads);
+        return mif::fuse(images, options, [&](int percent, const std::string& stage) {
+            check_thread();
+            trace.emplace_back(percent, stage);
+            return true;
+        });
+    };
+    ProgressTrace serial_trace, parallel_trace;
+    const auto serial = run(1, serial_trace);
+    const auto parallel = run(4, parallel_trace);
+    checkOutput(serial, images.front());
+    checkOutput(parallel, images.front());
+    requireIdentical(parallel.image, serial.image,
+                     "DTCWT multi-frame fusion depends on the thread count");
+    require(parallel_trace == serial_trace,
+            "DTCWT progress trace depends on the thread count");
+
+    // 第二个变换 checkpoint 已经过一层大图计算，覆盖并行任务完成后的取消与异常。
+    // 对比中断前完整轨迹，可发现多发 done、吞掉中断或把回调搬到工作线程的问题。
+    struct CallerFailure {};
+    ProgressTrace serial_cancel_trace, serial_failure_trace;
+    for (const int threads : {1, 4}) {
+        cv::setNumThreads(threads);
+        int checkpoints = 0;
+        bool cancelled = false;
+        ProgressTrace cancel_trace;
+        try {
+            (void)mif::fuse(images, options, [&](int percent, const std::string& stage) {
+                check_thread();
+                cancel_trace.emplace_back(percent, stage);
+                return stage != "dtcwt" || ++checkpoints < 2;
+            });
+        } catch (const mif::Cancelled&) { cancelled = true; }
+        require(cancelled && checkpoints == 2, "DTCWT parallel transform ignored cancellation");
+
+        checkpoints = 0;
+        bool propagated = false;
+        ProgressTrace failure_trace;
+        try {
+            (void)mif::fuse(images, options, [&](int percent, const std::string& stage) {
+                check_thread();
+                failure_trace.emplace_back(percent, stage);
+                if (stage == "dtcwt" && ++checkpoints == 2) throw CallerFailure{};
+                return true;
+            });
+        } catch (const CallerFailure&) { propagated = true; }
+        require(propagated && checkpoints == 2, "DTCWT parallel transform replaced a caller exception");
+        if (threads == 1) {
+            serial_cancel_trace = std::move(cancel_trace);
+            serial_failure_trace = std::move(failure_trace);
+        } else {
+            require(cancel_trace == serial_cancel_trace && failure_trace == serial_failure_trace,
+                    "DTCWT cancellation or exception trace depends on the thread count");
+        }
+    }
+    for (std::size_t frame = 0; frame < images.size(); ++frame)
+        requireIdentical(images[frame], originals[frame], "DTCWT parallel fusion modified a source frame");
+}
+
 } // 匿名命名空间
 
 void testDtcwtTransform() {
@@ -126,6 +269,7 @@ void testDtcwtTransform() {
     }
     checkReferenceCoefficients();
     checkDirectionSelectivity();
+    checkParallelTransform();
 }
 
 void testDtcwtFusion() {
@@ -180,6 +324,7 @@ void testDtcwtFusion() {
     const auto constant = mif::fuse(constants, options);
     require(cv::norm(constant.image, cv::Mat(3, 5, CV_32F, cv::Scalar(0.4)), cv::NORM_INF) < 1e-7,
             "DTCWT lowpass does not average every input equally");
+    checkParallelFusion();
 }
 
 void testDtcwtOptions() {

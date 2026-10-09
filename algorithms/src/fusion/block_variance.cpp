@@ -38,12 +38,13 @@ cv::Mat medianIndices(const cv::Mat& input, int window, int pass, const Progress
     return output;
 }
 
-/// 按真实块边界展开权重，避免把不整除的宽高整体 resize 后移动所有块边界。
+/// 按真实块边界展开权重或来源索引，避免整体 resize 移动不整除尺寸的块边界。
+template<class Value>
 cv::Mat expandBlocks(const cv::Mat& blocks, const cv::Size& size, int block_size) {
-    cv::Mat expanded(size, CV_32F);
+    cv::Mat expanded(size, blocks.type());
     for (int y = 0; y < size.height; ++y) {
-        const float* source = blocks.ptr<float>(y / block_size);
-        float* destination = expanded.ptr<float>(y);
+        const Value* source = blocks.ptr<Value>(y / block_size);
+        Value* destination = expanded.ptr<Value>(y);
         for (int bx = 0; bx < blocks.cols; ++bx) {
             const int start = bx * block_size;
             const int length = std::min(block_size, size.width - start);
@@ -51,6 +52,28 @@ cv::Mat expandBlocks(const cv::Mat& blocks, const cv::Size& size, int block_size
         }
     }
     return expanded;
+}
+
+/// 直接广播块权重到各颜色通道，不建立整幅权重及乘积临时图。
+/// 调用方仍按原始帧顺序累加；每个像素先做 float 乘法，再做 float 加法。
+void accumulateBlocks(const cv::Mat& image, const cv::Mat& weights,
+                      int block_size, cv::Mat& result) {
+    const int channels = image.channels();
+    for (int y = 0; y < image.rows; ++y) {
+        const float* source = image.ptr<float>(y);
+        float* destination = result.ptr<float>(y);
+        const float* row_weights = weights.ptr<float>(y / block_size);
+        for (int bx = 0; bx < weights.cols; ++bx) {
+            const float weight = row_weights[bx];
+            if (weight == 0) continue;
+            const int begin = bx * block_size * channels;
+            const int end = std::min((bx + 1) * block_size, image.cols) * channels;
+            for (int x = begin; x < end; ++x) {
+                const float contribution = source[x] * weight;
+                destination[x] += contribution;
+            }
+        }
+    }
 }
 
 /// 校验块边长和块级一致性窗口；无效配置抛 std::invalid_argument。
@@ -61,7 +84,7 @@ void validateBlockVarianceOptions(const BlockVarianceFusionOptions& options) {
 }
 
 /// 归一化 CV_32F 灰度/BGR 栈的块方差选帧融合；不修改输入，配置应已校验。
-/// 返回与原图同尺寸的图像、CV_32S 原始输入索引与逐图归一化权重。
+/// 返回与原图同尺寸的图像、CV_32S 原始输入索引，以及按需生成的归一化权重。
 /// 块方差完全并列时均分权重；进度及取消异常原样传播。
 MethodResult blockVarianceFusion(const std::vector<cv::Mat>& images, const BlockVarianceFusionOptions& options,
                        const ProgressCallback& progress) {
@@ -112,13 +135,15 @@ MethodResult blockVarianceFusion(const std::vector<cv::Mat>& images, const Block
     report(progress, 70, "weights");
     MethodResult result;
     result.image = cv::Mat::zeros(size, images.front().type());
-    result.weight_maps.reserve(images.size());
+    if (options.include_weight_maps) result.weight_maps.reserve(images.size());
     for (size_t i = 0; i < images.size(); ++i) {
         report(progress, 75 + static_cast<int>(20 * i / images.size()), "blend");
-        result.weight_maps.push_back(expandBlocks(block_weights[i], size, options.block_size));
-        result.image += images[i].mul(expandWeight(result.weight_maps.back(), images.front().channels()));
+        accumulateBlocks(images[i], block_weights[i], options.block_size, result.image);
+        if (options.include_weight_maps)
+            result.weight_maps.push_back(expandBlocks<float>(block_weights[i], size, options.block_size));
     }
-    result.source_index_map = dominantIndices(result.weight_maps);
+    // 中值索引只修正唯一来源块；并列块保留等权，必须从最终权重重新确定来源。
+    result.source_index_map = expandBlocks<int>(dominantIndices(block_weights), size, options.block_size);
     return result;
 }
 

@@ -1,4 +1,5 @@
 #include <mif/pipeline.hpp>
+#include "registration/registry.hpp"
 #include <utility>
 
 namespace mif {
@@ -7,7 +8,7 @@ PipelineResult registerAndFuse(const std::vector<cv::Mat>& images,
                                const RegistrationOptionsBase& registration_options,
                                const FusionOptionsBase& fusion_options,
                                const ProgressCallback& progress) {
-    // 组合层只协调两个公开入口；校验、计算和结果类型分别由对应模块维护。
+    // 组合层只协调两个阶段；校验、计算和结果类型分别由对应模块维护。
     ProgressCallback registration_progress, fusion_progress;
     if (progress) {
         registration_progress = [&progress](int percent, const std::string& stage) {
@@ -18,7 +19,10 @@ PipelineResult registerAndFuse(const std::vector<cv::Mat>& images,
             return progress(40 + percent * 60 / 100, stage);
         };
     }
-    auto registered = registerImages(images, registration_options, registration_progress);
+    // 跳过配准的注册项仅借用输入 Mat，避免在融合独立归一化前复制整栈。
+    // 借用只限本次同步调用；所有配准校验、进度和活跃方法的整数舍入均保持不变。
+    auto registered = detail::registration::registerImagesInternal(images, registration_options,
+                                                                    registration_progress, true);
     PipelineResult result;
     result.fusion = fuse(registered.images, fusion_options, fusion_progress);
     result.crop_region = registered.crop_region;

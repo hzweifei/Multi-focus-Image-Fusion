@@ -3,6 +3,7 @@
 #include "fusion/common/focus_measure.hpp"
 #include "fusion/common/guided_filter.hpp"
 #include "fusion/common/weight_map.hpp"
+#include "fusion/common/parallel_frames.hpp"
 #include "common/progress.hpp"
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
@@ -86,14 +87,19 @@ void validateLaplacianPyramidOptions(const LaplacianPyramidFusionOptions& option
 MethodResult laplacianPyramidFusion(const std::vector<cv::Mat>& images,
                                     const LaplacianPyramidFusionOptions& options, const ProgressCallback& progress) {
     auto maps = prepareFocusMaps(images, options.focus, progress);
-    std::vector<cv::Mat> detail_weights;
-    for (size_t i = 0; i < images.size(); ++i) {
+    std::vector<cv::Mat> detail_weights(images.size());
+    parallelFrames(images.size(), images.front().size(), [&](size_t i) {
         report(progress, 50 + static_cast<int>(20 * i / images.size()), "weights");
+    }, [&](size_t i) {
         // 金字塔直接从细节权重构建各尺度权重，不生成基础层权重。
-        detail_weights.push_back(guidedFilter(maps.guides[i], maps.decisions[i],
-                                             options.detail_radius, options.detail_epsilon));
-    }
+        detail_weights[i] = guidedFilter(maps.guides[i], maps.decisions[i],
+                                         options.detail_radius, options.detail_epsilon);
+        // 权重滤波结束后，本帧的决策与引导图不再参与金字塔重建。
+        maps.decisions[i].release();
+        maps.guides[i].release();
+    });
     maps.decisions.clear();
+    maps.guides.clear();
     normalizeWeights(detail_weights);
     MethodResult result;
     result.image = blendPyramid(images, detail_weights, options.max_levels, progress);

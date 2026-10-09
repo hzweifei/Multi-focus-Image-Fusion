@@ -4,8 +4,8 @@
 `outputs/Release/python/mif`；把 `outputs/Release/python` 加入 `PYTHONPATH`
 即可导入。运行时使用与扩展构建版本和架构匹配的 Python。
 
-`src/bindings.cpp` 注册参数类与阶段函数；`src/array_utils.*` 处理 NumPy 与
-`cv::Mat` 转换及内存所有权；`python/mif/__init__.py` 提供默认参数并整理非连续输入。
+`src/bindings.cpp` 注册参数类与阶段函数，并在文件内处理 NumPy 与 `cv::Mat` 转换及内存所有权；
+`python/mif/__init__.py` 提供默认参数并整理非连续输入。
 
 打包入口 `pyproject.toml` 位于仓库根目录，便于源码分发包一起包含算法与第三方依赖。
 初始化子模块并准备包含 `opencv_contrib/ximgproc` 的 OpenCV 开发包后，可在根目录执行
@@ -70,7 +70,7 @@ result = mif.register_and_fuse(images, registration_options, fusion_options)
 | `LaplacianPyramidFusionOptions` | 拉普拉斯金字塔：`focus=FocusMeasureOptions()`、`detail_radius=3`、`detail_epsilon=0.0001`、`max_levels=5` |
 | `BlockVarianceFusionOptions` | 块方差选择与一致性处理：`block_size=8`、`consistency_window_size=7` |
 | `DtcwtFusionOptions` | 双树复小波系数融合：`max_levels=4`、`activity_window_size=3` |
-| `GfgFgfFusionOptions` | 四邻域聚焦度量与两次快速引导滤波：`local_mean_window_size=7`、`selection_ratio=0`、`gfg_threshold=0.005`、`guided_radius=5`、`guided_epsilon=0.3`、`guided_subsample_factor=4` |
+| `GfgFgfFusionOptions` | G 优先与两阶段快速引导滤波：`local_mean_window_size=7`、`selection_ratio=0`、`gfg_threshold=0.005`、`guided_radius=5`、`guided_epsilon=0.3`、`guided_subsample_factor=4` |
 
 `FocusMeasureOptions` 包含 `measure=FocusMeasure.MODIFIED_LAPLACIAN` 与 `window_size=9`。
 也可以选择 `FocusMeasure.TENENGRAD`。GFF 与金字塔各自持有独立的清晰度配置。
@@ -83,7 +83,9 @@ GFG-FGF 的 `local_mean_window_size` 为 `[1,255]` 内的奇数；`selection_rat
 `gfg_threshold` 为 `[0,1]` 内的有限数；`guided_radius` 为 `[1,255]`；
 `guided_subsample_factor` 为 `[1,16]`。
 筛帧比例相对于最高 Scharr 梯度分数，默认 0 保留全部输入。
-梯度达到 `gfg_threshold` 时采用梯度响应，较弱时采用图像与局部均值的绝对差。
+G、R 完整保留并分别引导滤波。当前位置有原始 G 达到 `gfg_threshold` 的帧时，只在这些帧中比较滤波后的 G；
+全部未达到阈值时才比较滤波后的均值残差 R。并列时仅在合格候选中比较同一路 Sobel，仍并列则等权。
+这是本项目的 G 优先改进；第二阶段继续平滑决策权重，边界处允许其他帧获得部分权重。
 下采样倍数为 1 时使用完整分辨率，较大倍数在低分辨率计算系数，再结合原分辨率引导图生成输出。
 均值窗口、滤波半径、正则项和下采样倍数是项目默认设置，论文没有给出这些参数的完整取值。
 

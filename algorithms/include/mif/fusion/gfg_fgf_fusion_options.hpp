@@ -4,7 +4,7 @@
 
 namespace mif {
 
-/// GFG-FGF：类高斯四邻域聚焦度量、Sobel 消歧与两阶段快速引导滤波。
+/// GFG-FGF：G/R 独立滤波、G 候选优先、Sobel 消歧与决策权重滤波。
 /// 彩色输入转灰度评分和引导，融合权重共同作用于原图的全部颜色通道。
 struct GfgFgfFusionOptions final : FusionOptionsBase {
     /// 局部均值窗口边长，[1, 255] 内的奇数；灰度减去局部均值后取绝对值。
@@ -12,8 +12,8 @@ struct GfgFgfFusionOptions final : FusionOptionsBase {
     /// 可选工程扩展：保留全图 Scharr 分数不低于最高分数此比例的输入。
     /// 默认 0 保留全部焦面，符合论文；有限且位于 [0, 1]，无纹理时也保留全部。
     double selection_ratio = 0;
-    /// 论文 T0：GFG 响应达到阈值时采用 GFG，否则回退到均值残差。
-    /// 有限且位于 [0, 1]，作用于归一化图像。
+    /// 原始 G 达到阈值即成为 G 候选；有候选时仅比较其滤波后 G，否则比较滤波后 R。
+    /// 有限且位于 [0, 1]，作用于归一化图像的原始 G；不对滤波响应应用阈值。
     double gfg_threshold = 0.005;
     /// 两阶段引导滤波共用的窗口半径，[1, 255]，单位为输入像素。
     int guided_radius = 5;

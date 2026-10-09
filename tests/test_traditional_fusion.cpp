@@ -156,6 +156,48 @@ void testDctFusion() {
     checkLargeStack(mif::BlockVarianceFusionOptions{});
     checkProgress(mif::BlockVarianceFusionOptions{});
 
+    // 块级直接累加须与原逐像素权重重建一致；覆盖彩色、三帧并列、非连续 ROI 和残块。
+    for (const int depth : {CV_8U, CV_16U, CV_32F}) {
+        for (const int channels : {1, 3}) {
+            const double range = depth == CV_8U ? 255.0 : depth == CV_16U ? 65535.0 : 1.0;
+            const int type = CV_MAKETYPE(depth, channels);
+            const cv::Rect roi(2, 3, 27, 19);
+            std::vector<cv::Mat> inputs;
+            cv::RNG random(20261008);
+            for (int i = 0; i < 3; ++i) {
+                cv::Mat floating(25, 35, CV_MAKETYPE(CV_32F, channels));
+                random.fill(floating, cv::RNG::UNIFORM, 0.1, 0.9);
+                floating(cv::Rect(roi.x, roi.y, 8, 8)).setTo(cv::Scalar::all((i + 1) * 0.25));
+                cv::Mat parent;
+                floating.convertTo(parent, type, range);
+                inputs.push_back(parent(roi));
+            }
+            mif::BlockVarianceFusionOptions detailed_options;
+            detailed_options.include_weight_maps = true;
+            const auto detailed = mif::fuse(inputs, detailed_options);
+            checkDiagnostics(detailed, roi.size(), inputs.size());
+            cv::Mat dense = cv::Mat::zeros(roi.size(), CV_MAKETYPE(CV_32F, channels));
+            for (size_t i = 0; i < inputs.size(); ++i) {
+                cv::Mat normalized, weight = detailed.weight_maps[i];
+                inputs[i].convertTo(normalized, CV_32F, 1.0 / range);
+                if (channels == 3) cv::merge(std::vector<cv::Mat>(3, weight), weight);
+                dense += normalized.mul(weight);
+            }
+            cv::max(dense, 0, dense);
+            cv::min(dense, 1, dense);
+            cv::Mat expected;
+            dense.convertTo(expected, type, range);
+            require(cv::norm(detailed.image, expected, cv::NORM_INF) == 0,
+                    "Block accumulation differs from dense weight reconstruction");
+            detailed_options.include_weight_maps = false;
+            const auto compact = mif::fuse(inputs, detailed_options);
+            require(compact.weight_maps.empty() &&
+                    cv::norm(compact.image, detailed.image, cv::NORM_INF) == 0 &&
+                    cv::norm(compact.source_index_map, detailed.source_index_map, cv::NORM_INF) == 0,
+                    "Disabling block weight diagnostics changed fusion or source indices");
+        }
+    }
+
     // 三帧交替赢得不同块，右/下边缘不足整块仍须保留；不能整体 resize 后移动块边界。
     const cv::Size size(27, 19);
     std::vector<cv::Mat> images;
@@ -214,7 +256,7 @@ void testGfgfgfFusion() {
     const cv::Mat flat(sharp.size(), sharp.type(), cv::Scalar(80));
     const std::vector<cv::Mat> images{flat, stack[0], flat, flat, stack[1]};
     mif::GfgFgfFusionOptions options;
-    // 全局筛帧属于可选扩展，论文默认比较所有焦面；此处显式启用筛帧来验证索引映射。
+    // 全局筛帧属于可选扩展，默认比较所有焦面；此处显式启用筛帧来验证索引映射。
     options.selection_ratio = 0.15;
     options.include_weight_maps = true;
     const auto result = mif::fuse(images, options);
