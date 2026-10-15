@@ -15,6 +15,17 @@
 Windows 包和 wheel 收集核心库及 OpenCV DLL，导入时自动注册包内 DLL 目录。
 运行环境仍需 NumPy 和兼容的 Visual C++ 运行库；Linux/macOS 当前由环境提供 OpenCV 共享库。
 
+## 从 0.2 升级到 0.3
+
+当前 Python 包版本为 `0.3.0rc1`，配套 C++ SDK 为 `0.3.0`。
+删除代码中对 `options.selection_ratio` 的赋值；GFG-FGF 始终使用全部输入帧。
+原先默认值为 0 的调用继续使用全部焦面，原先设置非零筛选比例的调用会改变行为。
+
+安装新 wheel 时使用 `python -m pip install --upgrade <新 wheel 路径>`，然后重启 Python
+进程或 Notebook 内核。使用目录包时更新整个 `mif/` 目录，并检查 `mif.__file__` 和
+`mif.__version__` 是否指向新包。扩展 `.pyd` 和核心 DLL 必须配套更新；旧扩展混用
+新 DLL 会因参数内存布局不同而出错。自行编译的 C++ 调用方见 [SDK 迁移说明](https://github.com/hzweifei/Multi-focus-Image-Fusion/blob/HEAD/docs/sdk.md#从-02-升级到-03)。
+
 ## 统一入口，参数类型选择方法
 
 | 接口 | 接收的配置 | 返回内容 |

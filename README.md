@@ -25,6 +25,10 @@
 首次试用可添加包内两张 `focus_*.png`，再点击“开始融合”。
 发布页同时提供 SHA256 校验文件；标记为 Pre-release 的版本用于测试反馈。
 
+从 0.2 升级到 0.3 时，请将桌面 ZIP 解压到新目录。C++ 调用方需要重新编译，
+Python 需要更新完整包；GFG-FGF 已移除 `selection_ratio`，详见
+[SDK 迁移说明](docs/sdk.md#从-02-升级到-03)和 [Python 迁移说明](bindings/python/README.md#从-02-升级到-03)。
+
 ## 文档导航
 
 | 需要做什么 | 文档 |

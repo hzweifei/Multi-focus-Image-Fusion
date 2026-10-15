@@ -1,6 +1,6 @@
 # 顶层负责构建开关、编译选项、依赖查找和模块装配；各模块管理自己的源文件与安装规则。
 cmake_minimum_required(VERSION 3.21)
-project(MultiFocusImageFusion VERSION 0.2.0 LANGUAGES CXX)
+project(MultiFocusImageFusion VERSION 0.3.0 LANGUAGES CXX)
 
 # 未启用的模块不会查找其专用依赖，因此仅编译算法时无需 Qt 或 Python。
 option(MIF_BUILD_GUI "构建 Qt 桌面程序" ON)

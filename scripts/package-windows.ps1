@@ -81,6 +81,19 @@ function Relative-Name([string]$Root, [string]$File) {
     return $File.Substring($Root.Length + 1).Replace('\', '/')
 }
 
+function Assert-ReleaseVersion([string]$Build) {
+    # 发行标签必须对应实际配置的 SDK 版本，避免新接口再次沿用旧版本标签。
+    $versionEntry = @(Get-Content -LiteralPath (Join-Path $Build 'CMakeCache.txt') |
+        Where-Object { $_ -match '^CMAKE_PROJECT_VERSION:STATIC=' })
+    if ($versionEntry.Count -ne 1) { throw 'Configured project version was not found.' }
+    $sdkVersion = $versionEntry[0].Substring('CMAKE_PROJECT_VERSION:STATIC='.Length)
+    $releaseVersion = $Version.Substring(1).Split('-')[0]
+    if ($releaseVersion -ne $sdkVersion) {
+        throw "Release version $releaseVersion must match configured SDK version $sdkVersion."
+    }
+    return $sdkVersion
+}
+
 function Test-IsolatedStartup([string]$LaunchDirectory) {
     $saved = @{}
     $running = $null
@@ -136,6 +149,7 @@ try {
 
     $build = Assert-LocalDirectory ([IO.Path]::GetFullPath((Join-Path $repo $BuildDirectory)))
     $cache = Get-Content -LiteralPath (Join-Path $build 'CMakeCache.txt')
+    $sdkVersion = Assert-ReleaseVersion $build
     if (-not ($cache -match '^CMAKE_GENERATOR_PLATFORM:INTERNAL=x64$')) { throw 'Configured build must target x64.' }
     $configuredSource = @($cache | Where-Object { $_ -match '^CMAKE_HOME_DIRECTORY:INTERNAL=' })
     if ($configuredSource.Count -ne 1 -or
@@ -167,6 +181,8 @@ try {
     $testSummary = (Get-Content -LiteralPath (Join-Path $work 'tests.log') | Where-Object { $_ -match 'tests passed|Total Test time' }) -join "`n"
     if ($testSummary -notmatch '100% tests passed') { throw 'CTest did not report a complete passing test suite.' }
     $excludedChanges = @(Assert-Checkout)
+    # 构建可能触发 CMake 自动重新配置，再检查最终版本，避免使用旧缓存的版本号。
+    $sdkVersion = Assert-ReleaseVersion $build
 
     $source = Assert-LocalDirectory (Join-Path $repo 'outputs/Release/app')
     foreach ($required in @('mif_desktop.exe', 'mif_core.dll', 'platforms/qwindows.dll', 'licenses/THIRD_PARTY_NOTICES.md')) {
@@ -220,7 +236,7 @@ try {
 多聚焦图像融合 — Windows x64 测试版 $Version
 
 使用方法
-1. 将整个 ZIP 解压到一个文件夹，双击 mif_desktop.exe。
+1. 将整个 ZIP 解压到一个新文件夹，双击 mif_desktop.exe；升级时使用整套程序和 DLL。
 2. 导入同一场景、不同焦点的图片；存在位移时先进行配准。
 3. 选择融合算法，调整参数后执行融合，最后保存结果。
 4. 快速测试可只导入 examples/focus_01.png 和 focus_02.png。
@@ -242,6 +258,7 @@ VC 运行库来自 Visual Studio 的 Microsoft.VC143.CRT 可再分发目录。
     $null = Assert-Checkout
     $metadata = [ordered]@{
         version = $Version
+        sdk_version = $sdkVersion
         source_commit = $ExpectedCommit
         source_tree = 'Build inputs match the commit; publishing documentation changes listed below are excluded.'
         excluded_documentation_changes = $excludedChanges

@@ -28,7 +28,7 @@ __all__ = [
     "EccRegistrationOptions", "SiftRegistrationOptions",
     "fuse", "fuse_detailed", "register_images", "register_and_fuse",
 ]
-__version__ = "0.2.0rc2"
+__version__ = "0.3.0rc1"
 
 
 def _prepare(images):

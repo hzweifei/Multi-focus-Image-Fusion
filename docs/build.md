@@ -163,7 +163,7 @@ GitHub Release 附件使用完整的便携 ZIP。使用者解压后运行 `mif_d
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 `
-  -Version v0.2.0-preview.2 `
+  -Version v0.3.0-preview.1 `
   -ExpectedCommit (git rev-parse HEAD) `
   -RuntimeDirectory '<Visual Studio>/VC/Redist/MSVC/<版本>/x64/Microsoft.VC143.CRT' `
   -AdditionalNoticesDirectory 'outputs/release-notices' `
@@ -171,6 +171,8 @@ powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 `
 ```
 
 脚本要求 x64 MSVC 构建已配置，并由同名构建及测试预设启用桌面程序、交付目录和测试。
+发行标签中的三段版本必须与已配置的 SDK 版本一致，例如 `v0.3.0-preview.1` 对应 `0.3.0`；
+不匹配时会在打包前报错。升级版本后先重新执行 CMake 配置。
 算法、界面、构建输入和子模块必须与指定提交一致；允许尚未提交的发布文档修改仅限
 `README.md`、本页及打包脚本，并在包内记录。补充说明须覆盖实际随包依赖；例如 Qt、
 ICU、ANGLE、OpenSSL、zstd 和 MSVC 的许可与源码来源，不能只依据过时的包管理器

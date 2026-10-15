@@ -5,7 +5,23 @@
 
 ## 已验证环境与结果
 
-### 2026-10-15：全部焦面参与 GFG-FGF
+### 2026-10-15：Windows 0.3 接口迁移与交付
+
+移除 `selection_ratio` 后，公开参数布局不再兼容 0.2：已复现旧绑定使用旧 DLL 时正常，
+混用新 DLL 时 GFG-FGF 报参数错误。因此 SDK 升级至 `0.3.0`、Python 包升级至 `0.3.0rc1`，
+调用方需按 [SDK 迁移说明](sdk.md#从-02-升级到-03)重新编译并更新完整交付文件。
+
+在下方记录的 Windows 环境重新构建后：
+
+- **27/27 项 CTest** 通过，覆盖核心、Qt 流程与预览及 Python 绑定。
+- 独立 SDK 工程通过 `find_package(Mif 0.3 CONFIG REQUIRED)` 配置、编译和运行；
+  另一个要求 `0.2` 的工程在配置时被拒绝，错误明确指出已安装的版本为 `0.3.0`。
+- `0.3.0rc1` wheel 安装至独立目录，核对运行时版本与包元数据一致；排除开发 OpenCV/Qt
+  DLL 路径后，**24/24 项 Python 测试**通过。
+- `mif_benchmark` 编译通过；本次没有重新测量性能，后文的耗时仍为历史实测结果。
+- Qt 程序、SDK 和 Python 目录包重新整理到 `outputs/Release/`。
+
+### 2026-10-15：Linux 全部焦面参与 GFG-FGF
 
 本次移除整帧清晰度排除逻辑后，在 Linux x64、GCC 14.2、CMake 3.31.6、
 OpenCV 4.10.0（含 ximgproc）、Qt 5.15.15、Python 3.12.14、NumPy 2.3.5 环境完成 Release 构建：
@@ -13,7 +29,7 @@ OpenCV 4.10.0（含 ximgproc）、Qt 5.15.15、Python 3.12.14、NumPy 2.3.5 环�
 - **27/27 项 CTest** 通过，包含核心、Qt `offscreen` 流程与预览、Python 绑定；Python 共 **24/24 项用例**通过。
 - C++ 与 Python 回归覆盖全局响应弱但局部清晰的输入，验证下采样倍数 1 和 4 时仍保留其局部贡献、原始输入索引及归一化权重；C++ 另检查重排输入与关闭权重诊断。
 - `mif_benchmark` 目标编译通过；本次未重跑实图性能测试。
-- 本次未验证 Windows 构建、wheel/SDK 安装包和真实桌面样式；以下 Windows 交付记录为历史结果。
+- 该轮未验证 Windows 交付和真实桌面样式；同日补充的 Windows 交付检查见上节。
 
 ### 2026-10-09：Windows 优化与发布前验证
 

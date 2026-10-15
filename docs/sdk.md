@@ -15,7 +15,7 @@ licenses/      第三方声明
 ```cmake
 cmake_minimum_required(VERSION 3.21)
 project(MyFusionApp LANGUAGES CXX)
-find_package(Mif CONFIG REQUIRED)
+find_package(Mif 0.3 CONFIG REQUIRED)
 add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE mif::core)
 ```
@@ -28,8 +28,22 @@ target_link_libraries(my_app PRIVATE mif::core)
 当前 Windows 环境使用 MSVC x64。`mif::core` 自动传递依赖、包含路径及 MSVC 的 `/utf-8`。
 默认生成动态库；`MIF_BUILD_SHARED=OFF` 可生成静态库。
 
-当前 SDK 版本为 `0.2.0`。0.x 阶段只声明同一次版本内的兼容性；可用
-`find_package(Mif 0.2 CONFIG REQUIRED)` 避免误用接口不同的 0.1.x SDK。
+当前 SDK 版本为 `0.3.0`。0.x 阶段只声明同一次版本内的兼容性；使用
+`find_package(Mif 0.3 CONFIG REQUIRED)` 声明所需的接口系列。新 SDK 会拒绝
+`find_package(Mif 0.2 CONFIG REQUIRED)`；不指定版本时，CMake 无法替调用方检查兼容性。
+
+### 从 0.2 升级到 0.3
+
+GFG-FGF 已移除 `selection_ratio`，全部焦面始终参与逐像素比较。迁移时：
+
+1. 删除对 `GfgFgfFusionOptions::selection_ratio` 的赋值，将 CMake 版本要求改为 `0.3`。
+2. 更新整套 SDK 的头文件、库和 DLL，重新配置并编译调用程序及其插件。
+3. 部署与新程序配套的运行库；Python 扩展和 Qt 程序也需要使用同一版核心 DLL。
+
+删除字段改变了参数对象的内存布局，旧程序即使未显式设置该字段，也需要重新编译。
+仅替换 `mif_core.dll` 不能完成升级，版本号本身也不能阻止手动混装二进制文件。
+原先使用默认值 `selection_ratio=0` 的调用继续比较全部焦面；原先启用整帧筛选的调用
+会改为使用全部输入。其余参数与诊断索引仍按原始输入顺序工作。
 
 ## 三种调用方式
 
