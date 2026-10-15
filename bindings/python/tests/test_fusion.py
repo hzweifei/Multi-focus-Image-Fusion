@@ -92,9 +92,8 @@ class FusionTests(unittest.TestCase):
                 np.testing.assert_allclose(result, image, atol=1, rtol=0)
 
     def test_gfgfgf_subsample_options(self):
-        """快速滤波倍数完整传入核心；默认保留全部帧，合法端点可处理平坦输入。"""
+        """快速滤波倍数完整传入核心；全部帧参与融合，合法端点可处理平坦输入。"""
         options = mif.GfgFgfFusionOptions()
-        self.assertEqual(options.selection_ratio, 0)
         self.assertEqual(options.guided_subsample_factor, 4)
         images = [np.full((23, 35), value, np.uint16) for value in (10000, 50000)]
         for factor in (1, 4, 16):
@@ -105,6 +104,25 @@ class FusionTests(unittest.TestCase):
             options.guided_subsample_factor = factor
             with self.assertRaises(ValueError):
                 mif.fuse(images, options)
+
+    def test_gfgfgf_keeps_locally_focused_frame(self):
+        """全局弱响应的焦面仍可贡献独有的局部清晰纹理。"""
+        strong = np.full((65, 97), 0.5, np.float32)
+        local = strong.copy()
+        y, x = np.indices(strong.shape)
+        strong[:, :24] = np.where((x[:, :24] // 4) % 2 == 0, 0.1, 0.9)
+        local[:, 48:] = np.where((x[:, 48:] // 2 + y[:, 48:] // 2) % 2 == 0, 0.49, 0.51)
+        flat = np.full_like(strong, 0.5)
+        options = mif.GfgFgfFusionOptions()
+        options.include_weight_maps = True
+        for factor in (1, 4):
+            with self.subTest(subsample=factor):
+                options.guided_subsample_factor = factor
+                result = mif.fuse_detailed([flat, strong, local, flat], options)
+                self.assertEqual(len(result["weight_maps"]), 4)
+                self.assertGreater(result["weight_maps"][2][32, 80], 0.9)
+                self.assertEqual(result["source_index_map"][32, 80], 2)
+                np.testing.assert_allclose(sum(result["weight_maps"]), 1, atol=2e-6)
 
     def test_all_method_diagnostics_and_pipeline(self):
         """五种方法都能经过独立入口与组合入口；DTCWT 明确返回空诊断。"""

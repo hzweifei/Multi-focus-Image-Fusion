@@ -89,7 +89,7 @@ template<class Options>
 void checkLargeStack(Options options) {
     std::vector<cv::Mat> images(257, cv::Mat::zeros(17, 19, CV_8U));
     images.back() = cv::Mat(17, 19, CV_8U);
-    // 独立生成每个完整/残缺块都有方差的纹理，同时保留可被 Scharr 检出的梯度。
+    // 独立生成每个完整/残缺块都有方差的纹理与梯度。
     // 通用 texture() 的文字会覆盖右上 3×8 残块，使其合法并列，无法用于唯一来源断言。
     for (int y = 0; y < images.back().rows; ++y)
         for (int x = 0; x < images.back().cols; ++x)
@@ -250,36 +250,21 @@ void testGfgfgfFusion() {
     checkLargeStack(mif::GfgFgfFusionOptions{});
     checkProgress(mif::GfgFgfFusionOptions{});
 
-    // 保留帧位于原输入 1 和 4，中间插入无纹理帧，诊断不能错误返回压缩后的 0/1。
+    // 清晰内容位于原输入 1 和 4，中间插入无纹理帧，诊断始终使用原始下标。
     const auto sharp = texture(129, 193);
     const auto stack = focusStack(sharp);
     const cv::Mat flat(sharp.size(), sharp.type(), cv::Scalar(80));
     const std::vector<cv::Mat> images{flat, stack[0], flat, flat, stack[1]};
     mif::GfgFgfFusionOptions options;
-    // 全局筛帧属于可选扩展，默认比较所有焦面；此处显式启用筛帧来验证索引映射。
-    options.selection_ratio = 0.15;
     options.include_weight_maps = true;
     const auto result = mif::fuse(images, options);
     checkDiagnostics(result, sharp.size(), images.size());
-    for (int excluded : {0, 2, 3})
-        require(cv::norm(result.weight_maps[excluded], cv::NORM_INF) == 0, "GFG-FGF restored a filtered-out frame's weights");
-    require(cv::countNonZero((result.source_index_map != 1) & (result.source_index_map != 4)) == 0,
-            "GFG-FGF indices were not mapped back to original inputs");
     require(cv::countNonZero(result.source_index_map == 1) > 0 && cv::countNonZero(result.source_index_map == 4) > 0,
-            "GFG-FGF failed to use both complementary retained frames");
+            "GFG-FGF failed to use both complementary focused frames");
     require(mae(result.image, sharp) < std::min(mae(stack[0], sharp), mae(stack[1], sharp)) * 0.85,
-            "GFG-FGF filtering lost complementary focused content");
-
-    // 筛选比例 1 可以只留下唯一最清晰帧；只有一个候选仍必须正常融合并保持原索引。
-    cv::Mat blurred;
-    cv::GaussianBlur(sharp, blurred, {0, 0}, 3);
-    options.selection_ratio = 1;
-    const auto single = mif::fuse({flat, blurred, sharp}, options);
-    require(cv::countNonZero(single.source_index_map != 2) == 0 &&
-            cv::norm(single.image, sharp, cv::NORM_INF) <= 1, "GFG-FGF mishandled its sole retained frame");
+            "GFG-FGF lost complementary focused content");
 
     // 高阈值应回退到均值残差，不能把全部聚焦信息置零后等权平均。
-    options.selection_ratio = 0;
     options.gfg_threshold = 1;
     const auto residual = mif::fuse({flat, sharp}, options);
     checkDiagnostics(residual, sharp.size(), 2);
@@ -289,8 +274,7 @@ void testGfgfgfFusion() {
     const double nan = std::numeric_limits<double>::quiet_NaN();
     for (const auto& invalidate : std::vector<std::function<void(mif::GfgFgfFusionOptions&)>>{
             [](auto& o) { o.local_mean_window_size = 2; }, [](auto& o) { o.local_mean_window_size = 257; },
-            [](auto& o) { o.selection_ratio = -0.1; }, [](auto& o) { o.selection_ratio = 1.1; },
-            [nan](auto& o) { o.selection_ratio = nan; }, [](auto& o) { o.gfg_threshold = -0.1; },
+            [](auto& o) { o.gfg_threshold = -0.1; },
             [](auto& o) { o.gfg_threshold = 1.1; }, [nan](auto& o) { o.gfg_threshold = nan; },
             [](auto& o) { o.guided_radius = 0; }, [](auto& o) { o.guided_radius = 256; },
             [](auto& o) { o.guided_subsample_factor = 0; }, [](auto& o) { o.guided_subsample_factor = 17; },

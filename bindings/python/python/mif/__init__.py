@@ -61,13 +61,13 @@ def fuse(images, options=None):
         LaplacianPyramidFusionOptions: focus、detail_radius、detail_epsilon、max_levels。
         BlockVarianceFusionOptions: block_size、consistency_window_size。
         DtcwtFusionOptions: max_levels、activity_window_size。
-        GfgFgfFusionOptions: local_mean_window_size、selection_ratio、gfg_threshold、
+        GfgFgfFusionOptions: local_mean_window_size、gfg_threshold、
             guided_radius、guided_epsilon、guided_subsample_factor。
         focus 包含 measure 和 window_size；读取得到内部引用，整体赋值复制数值。
         所有方法继承 include_weight_maps，默认为 False。
 
     所有引导滤波 epsilon 须在 [1e-6, float32 最大有限值]。
-    GFG-FGF 的 selection_ratio 默认 0 保留全部帧；G、R 分别引导滤波。
+    GFG-FGF 始终使用全部输入帧；G、R 分别引导滤波。
     原始 G 达到 gfg_threshold 的帧优先参与比较，全部未达标时才比较 R 路。
     guided_subsample_factor 范围 [1,16]，默认 4。
 
@@ -88,7 +88,7 @@ def fuse_detailed(images, options=None):
         DTCWT 在多个尺度与方向选择系数，无法对应单一来源图，返回 None。
     weight_maps: include_weight_maps=True 时返回方法提供的归一化权重。
         GFF/金字塔为细节权重，块方差为选块权重，GFG-FGF 为最终融合权重。
-        列表按原始输入排序，GFG-FGF 筛选排除的帧权重全零。
+        列表按原始输入排序，每张输入对应一张权重图。
         默认以及 DTCWT 方法均返回空列表。
 
     所有返回数组在调用结束后仍持有有效存储，异常约定与 fuse 相同。

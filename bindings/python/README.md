@@ -70,7 +70,7 @@ result = mif.register_and_fuse(images, registration_options, fusion_options)
 | `LaplacianPyramidFusionOptions` | 拉普拉斯金字塔：`focus=FocusMeasureOptions()`、`detail_radius=3`、`detail_epsilon=0.0001`、`max_levels=5` |
 | `BlockVarianceFusionOptions` | 块方差选择与一致性处理：`block_size=8`、`consistency_window_size=7` |
 | `DtcwtFusionOptions` | 双树复小波系数融合：`max_levels=4`、`activity_window_size=3` |
-| `GfgFgfFusionOptions` | G 优先与两阶段快速引导滤波：`local_mean_window_size=7`、`selection_ratio=0`、`gfg_threshold=0.005`、`guided_radius=5`、`guided_epsilon=0.3`、`guided_subsample_factor=4` |
+| `GfgFgfFusionOptions` | G 优先与两阶段快速引导滤波：`local_mean_window_size=7`、`gfg_threshold=0.005`、`guided_radius=5`、`guided_epsilon=0.3`、`guided_subsample_factor=4` |
 
 `FocusMeasureOptions` 包含 `measure=FocusMeasure.MODIFIED_LAPLACIAN` 与 `window_size=9`。
 也可以选择 `FocusMeasure.TENENGRAD`。GFF 与金字塔各自持有独立的清晰度配置。
@@ -79,10 +79,10 @@ result = mif.register_and_fuse(images, registration_options, fusion_options)
 窗口单位是块。该方法对应参考仓库的 `dct` 标识，当前实现按空间域块方差选图。
 DTCWT 的 `max_levels` 为 `[1,16]`，`activity_window_size` 为 `[1,31]` 内的奇数，作用于各层系数。
 
-GFG-FGF 的 `local_mean_window_size` 为 `[1,255]` 内的奇数；`selection_ratio` 和
+GFG-FGF 的 `local_mean_window_size` 为 `[1,255]` 内的奇数；
 `gfg_threshold` 为 `[0,1]` 内的有限数；`guided_radius` 为 `[1,255]`；
 `guided_subsample_factor` 为 `[1,16]`。
-筛帧比例相对于最高 Scharr 梯度分数，默认 0 保留全部输入。
+全部输入帧始终参与计算。
 G、R 完整保留并分别引导滤波。当前位置有原始 G 达到 `gfg_threshold` 的帧时，只在这些帧中比较滤波后的 G；
 全部未达到阈值时才比较滤波后的均值残差 R。并列时仅在合格候选中比较同一路 Sobel，仍并列则等权。
 这是本项目的 G 优先改进；第二阶段继续平滑决策权重，边界处允许其他帧获得部分权重。
@@ -114,10 +114,10 @@ image = mif.fuse(images, options)
 |---|---|---|
 | GFF、拉普拉斯金字塔 | 最大细节权重的原始输入索引 | 归一化细节权重 |
 | 块方差 | 经过一致性处理的块来源索引 | 选块权重 |
-| GFG-FGF | 最大最终权重的原始输入索引 | 最终融合权重，排除帧为全零 |
+| GFG-FGF | 最大最终权重的原始输入索引 | 每张输入的最终融合权重 |
 | DTCWT | `None` | `[]` |
 
-索引数组为 `int32`，从零开始；权重列表存在时按原始输入顺序排列，筛帧不改变下标。
+索引数组为 `int32`，从零开始；权重列表存在时每张输入对应一张权重图，按原始输入顺序排列。
 默认 `weight_maps=[]`。DTCWT 在不同尺度和方向选择系数，没有单一空间来源图，
 即使开启权重返回也使用空诊断。组合入口遵循相同约定。
 

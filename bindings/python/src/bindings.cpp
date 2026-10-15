@@ -175,8 +175,6 @@ void bindOptions(nb::module_& module) {
     nb::class_<mif::GfgFgfFusionOptions, mif::FusionOptionsBase>(module, "GfgFgfFusionOptions", "G/R 独立滤波、G 候选优先、Sobel 平局处理与两阶段快速引导滤波参数。")
         .def(nb::init<>())
         .def_rw("local_mean_window_size", &mif::GfgFgfFusionOptions::local_mean_window_size)
-        .def_rw("selection_ratio", &mif::GfgFgfFusionOptions::selection_ratio,
-            "可选 Scharr 全局筛帧比例，范围 [0,1]；默认 0，保留全部输入。")
         .def_rw("gfg_threshold", &mif::GfgFgfFusionOptions::gfg_threshold,
             "原始 G 的候选阈值，范围 [0,1]，默认 0.005；有 G 候选时只比较其滤波响应，否则比较 R 路。")
         .def_rw("guided_radius", &mif::GfgFgfFusionOptions::guided_radius)

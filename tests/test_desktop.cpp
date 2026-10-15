@@ -228,7 +228,6 @@ struct FusionControls {
     QSpinBox* dtcwt_max_levels;
     QSpinBox* dtcwt_activity_window_size;
     QSpinBox* gfg_fgf_local_mean_window_size;
-    QDoubleSpinBox* gfg_fgf_selection_ratio;
     QDoubleSpinBox* gfg_fgf_threshold;
     QSpinBox* gfg_fgf_guided_radius;
     QDoubleSpinBox* gfg_fgf_guided_epsilon;
@@ -262,7 +261,6 @@ struct FusionControls {
           dtcwt_max_levels(window.findChild<QSpinBox*>("dtcwtLevels")),
           dtcwt_activity_window_size(window.findChild<QSpinBox*>("dtcwtActivityWindow")),
           gfg_fgf_local_mean_window_size(window.findChild<QSpinBox*>("gfgfgfDifferenceWindow")),
-          gfg_fgf_selection_ratio(window.findChild<QDoubleSpinBox*>("gfgfgfSelectionRatio")),
           gfg_fgf_threshold(window.findChild<QDoubleSpinBox*>("gfgfgfDifferenceThreshold")),
           gfg_fgf_guided_radius(window.findChild<QSpinBox*>("gfgfgfGuidedRadius")),
           gfg_fgf_guided_epsilon(window.findChild<QDoubleSpinBox*>("gfgfgfGuidedEpsilon")),
@@ -271,7 +269,7 @@ struct FusionControls {
         require(settings && method && base_radius && base_epsilon && max_levels && reset,
                 "Fusion settings controls are missing");
         require(block_variance_panel && dtcwt_panel && gfg_fgf_panel && block_variance_block_size && block_variance_consistency_window_size &&
-                dtcwt_max_levels && dtcwt_activity_window_size && gfg_fgf_local_mean_window_size && gfg_fgf_selection_ratio &&
+                dtcwt_max_levels && dtcwt_activity_window_size && gfg_fgf_local_mean_window_size &&
                 gfg_fgf_threshold && gfg_fgf_guided_radius && gfg_fgf_guided_epsilon && gfg_fgf_guided_subsample_factor,
                 "New fusion method panels or parameters are missing");
     }
@@ -302,7 +300,6 @@ struct FusionControls {
         dtcwt_max_levels->setValue(options.dtcwt.max_levels);
         dtcwt_activity_window_size->setValue(options.dtcwt.activity_window_size);
         gfg_fgf_local_mean_window_size->setValue(options.gfg_fgf.local_mean_window_size);
-        gfg_fgf_selection_ratio->setValue(options.gfg_fgf.selection_ratio);
         gfg_fgf_threshold->setValue(options.gfg_fgf.gfg_threshold);
         gfg_fgf_guided_radius->setValue(options.gfg_fgf.guided_radius);
         gfg_fgf_guided_epsilon->setValue(options.gfg_fgf.guided_epsilon);
@@ -349,7 +346,6 @@ struct FusionControls {
         case FusionMethod::GfgFgf: {
             const auto* value = dynamic_cast<const mif::GfgFgfFusionOptions*>(actual.get());
             require(value && value->local_mean_window_size == expected.gfg_fgf.local_mean_window_size &&
-                    close(value->selection_ratio, expected.gfg_fgf.selection_ratio) &&
                     close(value->gfg_threshold, expected.gfg_fgf.gfg_threshold) &&
                     value->guided_radius == expected.gfg_fgf.guided_radius &&
                     close(value->guided_epsilon, expected.gfg_fgf.guided_epsilon) &&
@@ -373,7 +369,6 @@ struct FusionControls {
                 dtcwt_max_levels->value() == expected.dtcwt.max_levels &&
                 dtcwt_activity_window_size->value() == expected.dtcwt.activity_window_size &&
                 gfg_fgf_local_mean_window_size->value() == expected.gfg_fgf.local_mean_window_size &&
-                close(gfg_fgf_selection_ratio->value(), expected.gfg_fgf.selection_ratio) &&
                 close(gfg_fgf_threshold->value(), expected.gfg_fgf.gfg_threshold) &&
                 gfg_fgf_guided_radius->value() == expected.gfg_fgf.guided_radius &&
                 close(gfg_fgf_guided_epsilon->value(), expected.gfg_fgf.guided_epsilon) &&
@@ -394,7 +389,7 @@ struct FusionControls {
         return {method, guided.focus, guided.window_size, guided.detail_radius, guided.detail_epsilon, base_radius, base_epsilon,
                 pyramid.focus, pyramid.window_size, pyramid.detail_radius, pyramid.detail_epsilon, max_levels,
                 block_variance_block_size, block_variance_consistency_window_size, dtcwt_max_levels, dtcwt_activity_window_size, gfg_fgf_local_mean_window_size,
-                gfg_fgf_selection_ratio, gfg_fgf_threshold, gfg_fgf_guided_radius, gfg_fgf_guided_epsilon, gfg_fgf_guided_subsample_factor};
+                gfg_fgf_threshold, gfg_fgf_guided_radius, gfg_fgf_guided_epsilon, gfg_fgf_guided_subsample_factor};
     }
 };
 
@@ -419,7 +414,6 @@ FusionValues customFusionValues() {
     options.dtcwt.max_levels = 3;
     options.dtcwt.activity_window_size = 5;
     options.gfg_fgf.local_mean_window_size = 9;
-    options.gfg_fgf.selection_ratio = 0.22;
     options.gfg_fgf.gfg_threshold = 0.012;
     options.gfg_fgf.guided_radius = 4;
     options.gfg_fgf.guided_epsilon = 0.2;
@@ -774,9 +768,8 @@ void verifyFusionSettings() {
             controls.gfg_fgf_guided_radius->minimum() == 1 && controls.gfg_fgf_guided_radius->maximum() == 255 &&
             controls.gfg_fgf_guided_subsample_factor->minimum() == 1 && controls.gfg_fgf_guided_subsample_factor->maximum() == 16,
             "New fusion method integer ranges are incorrect");
-    require(controls.gfg_fgf_selection_ratio->minimum() == 0 && controls.gfg_fgf_selection_ratio->maximum() == 1 &&
-            controls.gfg_fgf_threshold->minimum() == 0 && controls.gfg_fgf_threshold->maximum() == 1,
-            "GFG-FGF ratio ranges are incorrect");
+    require(controls.gfg_fgf_threshold->minimum() == 0 && controls.gfg_fgf_threshold->maximum() == 1,
+            "GFG-FGF threshold range is incorrect");
 
     auto edited = customFusionValues();
     controls.setValues(edited);

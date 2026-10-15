@@ -216,7 +216,7 @@ void writeOptions(cv::FileStorage& json, const mif::FusionOptionsBase& options) 
         json << "detail_radius" << pyramid->detail_radius << "detail_epsilon" << pyramid->detail_epsilon
              << "max_levels" << pyramid->max_levels;
     } else if (const auto* gfg = dynamic_cast<const mif::GfgFgfFusionOptions*>(&options)) {
-        json << "local_mean_window_size" << gfg->local_mean_window_size << "selection_ratio" << gfg->selection_ratio
+        json << "local_mean_window_size" << gfg->local_mean_window_size
              << "gfg_threshold" << gfg->gfg_threshold << "guided_radius" << gfg->guided_radius
              << "guided_epsilon" << gfg->guided_epsilon << "guided_subsample_factor" << gfg->guided_subsample_factor;
     } else if (const auto* block = dynamic_cast<const mif::BlockVarianceFusionOptions*>(&options)) {

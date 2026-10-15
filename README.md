@@ -119,7 +119,7 @@ fused = result["image"]  # NumPy；彩色为 BGR
 配置、所有权和返回字典见 [Python 接口](bindings/python/README.md)。
 
 使用 G 优先的 GFG-FGF 方法时，选择 `GfgFgfFusionOptions`。
-该方法默认保留全部焦面（`selection_ratio=0`），分别滤波四邻域响应 G 和均值残差 R。
+该方法始终使用全部输入焦面，分别滤波四邻域响应 G 和均值残差 R。
 每个位置只要有原始 G 达到阈值的焦面，就在这些焦面中比较滤波后的 G；全部未达阈值时才比较滤波后的 R。
 同类响应并列时使用 Sobel 消歧，再滤波决策图、归一化权重并融合原图。
 这是基于《多聚焦显微图像融合算法》的自定义改进；第二阶段仍会平滑来源边界。

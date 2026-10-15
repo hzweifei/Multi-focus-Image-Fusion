@@ -206,12 +206,6 @@ FusionSettings::FusionSettings(QWidget* parent) : QGroupBox(parent) {
         "范围：1–255 px 的奇数。计算图像与其局部均值之差时使用的平均窗口。\n"
         "偶数会调整为下一个奇数。"));
     addParameter(gfg_fgf_form, QStringLiteral("差异窗口"), gfg_fgf_.local_mean_window_size, label_width);
-    gfg_fgf_.selection_ratio = createRatio(gfg_fgf_.panel, QStringLiteral("gfgfgfSelectionRatio"),
-                                         gfg_defaults.selection_ratio, 0.01);
-    gfg_fgf_.selection_ratio->setToolTip(QStringLiteral(
-        "范围：0–1。可选的全局 Scharr 梯度筛帧比例，0 保留全部输入。\n"
-        "数值越大，筛选越严格，可能排除只含少量清晰区域的图片。"));
-    addParameter(gfg_fgf_form, QStringLiteral("可选筛帧比"), gfg_fgf_.selection_ratio, label_width);
     gfg_fgf_.gfg_threshold = createRatio(gfg_fgf_.panel, QStringLiteral("gfgfgfDifferenceThreshold"),
                                               gfg_defaults.gfg_threshold, 0.001);
     gfg_fgf_.gfg_threshold->setToolTip(QStringLiteral(
@@ -286,7 +280,6 @@ std::unique_ptr<FusionOptionsBase> FusionSettings::options() const {
     case FusionMethod::GfgFgf: {
         auto result = std::make_unique<GfgFgfFusionOptions>();
         result->local_mean_window_size = gfg_fgf_.local_mean_window_size->value();
-        result->selection_ratio = gfg_fgf_.selection_ratio->value();
         result->gfg_threshold = gfg_fgf_.gfg_threshold->value();
         result->guided_radius = gfg_fgf_.guided_radius->value();
         result->guided_epsilon = gfg_fgf_.guided_epsilon->value();
@@ -318,7 +311,7 @@ void FusionSettings::updateMethodVisibility() {
         method_hint_->setText(QStringLiteral("用双树复小波比较各尺度、各方向的细节，再重建图像。"));
         break;
     case FusionMethod::GfgFgf:
-        method_hint_->setText(QStringLiteral("优先比较梯度达标的图片，全部未达标时比较均值残差，再平滑权重融合；筛帧默认关闭。"));
+        method_hint_->setText(QStringLiteral("优先比较梯度达标的图片，全部未达标时比较均值残差，再平滑权重融合；全部输入参与逐像素比较。"));
         break;
     }
 }
@@ -359,7 +352,6 @@ void FusionSettings::resetCurrentMethod() {
         break;
     case FusionMethod::GfgFgf:
         gfg_fgf_.local_mean_window_size->setValue(gfg_defaults.local_mean_window_size);
-        gfg_fgf_.selection_ratio->setValue(gfg_defaults.selection_ratio);
         gfg_fgf_.gfg_threshold->setValue(gfg_defaults.gfg_threshold);
         gfg_fgf_.guided_radius->setValue(gfg_defaults.guided_radius);
         gfg_fgf_.guided_epsilon->setValue(gfg_defaults.guided_epsilon);

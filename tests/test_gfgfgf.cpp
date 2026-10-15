@@ -316,11 +316,9 @@ void checkBranchSobelAndTies() {
     }
 }
 
-void checkAllPlanesByDefault() {
+void checkAllPlanesParticipate() {
     mif::GfgFgfFusionOptions options;
     options.include_weight_maps = true;
-    require(options.selection_ratio == 0,
-            "GFG-FGF must compare all focal planes by default");
     require(options.guided_subsample_factor == 4,
             "GFG-FGF did not enable fast guided filtering by default");
     cv::Mat strong(65, 97, CV_32F, cv::Scalar(0.5));
@@ -331,27 +329,36 @@ void checkAllPlanesByDefault() {
         for (int x = 48; x < local.cols; ++x)
             local.at<float>(y, x) = ((x / 2 + y / 2) % 2 == 0) ? 0.49f : 0.51f;
     }
-    // 第二张的全局梯度很弱，但独自提供右侧纹理。默认路径必须让它参与该区域。
-    const auto all_planes = mif::fuse({strong, local}, options);
-    require(all_planes.weight_maps[1].at<float>(32, 80) > 0.9f,
-            "Default GFG-FGF discarded a weak frame containing uniquely focused local detail");
-    options.selection_ratio = 0.15;
-    const auto selected = mif::fuse({strong, local}, options);
-    require(cv::norm(selected.weight_maps[1], cv::NORM_INF) == 0,
-            "Optional global gradient preselection did not filter the deliberately weak frame");
-
-    // 被排除帧分布在选中帧前后，检查稀疏位置回填零图时不改变原始输入索引。
+    // 第二张的全局梯度很弱，但独自提供右侧纹理；全部焦面必须参与逐像素决策。
+    // 同时检查全分辨率和默认快速路径，避免局部清晰、全局弱响应的帧被丢弃。
     const cv::Mat flat(strong.size(), CV_32F, cv::Scalar(0.5));
-    const auto sparse = mif::fuse({flat, strong, local, flat}, options);
-    require(sparse.weight_maps.size() == 4 && cv::norm(sparse.image, strong, cv::NORM_INF) == 0 &&
-            cv::countNonZero(sparse.source_index_map != 1) == 0,
-            "Sparse GFG weights changed selected-frame pixels or original source indices");
-    for (size_t i = 0; i < sparse.weight_maps.size(); ++i) {
-        require(sparse.weight_maps[i].type() == CV_32F && sparse.weight_maps[i].size() == strong.size() &&
-                cv::norm(sparse.weight_maps[i], cv::Mat(strong.size(), CV_32F, cv::Scalar(i == 1 ? 1 : 0)),
-                         cv::NORM_INF) == 0,
-                "GFG returned an empty or misplaced weight for a retained or excluded frame");
+    mif::FusionResult sparse;
+    for (int subsample : {1, 4}) {
+        options.guided_subsample_factor = subsample;
+        const auto all_planes = mif::fuse({strong, local}, options);
+        require(all_planes.weight_maps[1].at<float>(32, 80) > 0.9f &&
+                all_planes.source_index_map.at<int>(32, 80) == 1,
+                "GFG-FGF discarded a weak frame containing uniquely focused local detail");
+        sparse = mif::fuse({flat, strong, local, flat}, options);
+        require(sparse.weight_maps.size() == 4 && sparse.weight_maps[2].at<float>(32, 80) > 0.9f &&
+                sparse.source_index_map.at<int>(32, 80) == 2 &&
+                sparse.source_index_map.at<int>(32, 10) == 1,
+                "GFG-FGF lost locally focused content or changed original source indices");
+        cv::Mat total = cv::Mat::zeros(strong.size(), CV_32F);
+        for (const auto& weight : sparse.weight_maps) {
+            require(weight.type() == CV_32F && weight.size() == strong.size() && cv::checkRange(weight),
+                    "GFG-FGF returned an invalid per-input weight map");
+            total += weight;
+        }
+        require(cv::norm(total, cv::Mat(strong.size(), CV_32F, cv::Scalar(1)), cv::NORM_INF) < 2e-6,
+                "GFG-FGF weights over all input frames were not normalized");
+        const auto reordered = mif::fuse({flat, local, strong, flat}, options);
+        require(cv::norm(reordered.image, sparse.image, cv::NORM_INF) < 2e-6 &&
+                reordered.source_index_map.at<int>(32, 80) == 1 &&
+                cv::norm(reordered.weight_maps[1], sparse.weight_maps[2], cv::NORM_INF) < 2e-6,
+                "Reordering GFG-FGF inputs lost the locally focused weak frame");
     }
+
     options.include_weight_maps = false;
     const auto without_weights = mif::fuse({flat, strong, local, flat}, options);
     require(without_weights.weight_maps.empty() &&
@@ -439,7 +446,7 @@ void testGfgfgfPriority() {
     checkFocusInformation();
     checkPriorityDecisions();
     checkBranchSobelAndTies();
-    checkAllPlanesByDefault();
+    checkAllPlanesParticipate();
     checkStripeFocusReversal();
 }
 

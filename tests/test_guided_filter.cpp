@@ -199,10 +199,6 @@ void checkParallelFusion() {
     check(mif::GuidedFilterFusionOptions{});
     check(mif::LaplacianPyramidFusionOptions{});
     check(mif::GfgFgfFusionOptions{});
-    // 非零筛选比例使并行评分实际执行 Scharr；本组纹理帧均超过这一低阈值。
-    mif::GfgFgfFusionOptions with_screening;
-    with_screening.selection_ratio = 1e-6;
-    check(with_screening);
 }
 
 } // 匿名命名空间
@@ -237,7 +233,6 @@ void testGuidedFilterNumerics() {
                 options.detail_radius = radius;
             } else {
                 options.guided_radius = radius;
-                options.selection_ratio = 0;
             }
             const auto averaged = mif::fuse({constant * 0.4f, constant, constant * 1.6f}, options);
             require(cv::checkRange(averaged.image), "Minimum legal epsilon produced nonfinite output");

@@ -78,7 +78,7 @@ SIFT 固定估计单应性；ECC 支持 `Translation`、`Affine`、`Homography`�
 | `LaplacianPyramidFusionOptions` | `focus`、`detail_radius`、`detail_epsilon`、`max_levels` |
 | `BlockVarianceFusionOptions` | `block_size`、`consistency_window_size` |
 | `DtcwtFusionOptions` | `max_levels`、`activity_window_size` |
-| `GfgFgfFusionOptions` | `local_mean_window_size`、`selection_ratio`、`gfg_threshold`、`guided_radius`、`guided_epsilon`、`guided_subsample_factor` |
+| `GfgFgfFusionOptions` | `local_mean_window_size`、`gfg_threshold`、`guided_radius`、`guided_epsilon`、`guided_subsample_factor` |
 
 配准基类 `RegistrationOptionsBase` 提供 `max_working_dimension`，默认 1200，限制估计
 变换时的最长边；重采样始终在原分辨率进行。融合基类 `FusionOptionsBase` 提供
@@ -88,7 +88,7 @@ SIFT 固定估计单应性；ECC 支持 `Translation`、`Affine`、`Homography`�
 窗口名以 `window_size` 结尾时表示边长，`radius` 表示半径。块方差的一致性窗口
 以块为单位，小波活动度窗口以子带采样点为单位，详见对应头文件。
 
-GFG-FGF 默认 `selection_ratio=0` 保留全部输入，采用自定义的 G 优先决策。
+GFG-FGF 始终使用全部输入，采用自定义的 G 优先决策。
 `gfg_threshold=0.005` 是原始四邻域响应 G 的候选资格阈值，包含等号。
 G、均值残差 R 分别做第一阶段滤波：同一位置只要有 G 候选，就只比较这些帧的 G 路响应；
 全部未达阈值时才比较 R 路响应。第二阶段仍对决策图滤波，因此最终边界权重可能包含该位置的 R 候选。
@@ -110,8 +110,8 @@ GFF/金字塔的引导滤波使用 OpenCV `ximgproc`；GFG-FGF 使用项目的�
 
 `source_index_map` 为可选 `CV_32SC1` 诊断图，记录原始输入的零起始索引，不是物理深度或置信度。
 GFF/金字塔记录最大细节权重的来源，块方差记录选块来源，GFG-FGF 记录最大最终权重的来源。
-`weight_maps` 仅在 `include_weight_maps=true` 且方法支持时返回，按原始输入顺序排列；
-被筛除的帧保留零权重占位。GFF/金字塔返回细节权重，不含全部中间权重。
+`weight_maps` 仅在 `include_weight_maps=true` 且方法支持时返回，每张输入对应一张权重图，按原始输入顺序排列。
+GFF/金字塔返回细节权重，不含全部中间权重。
 DTCWT 在尺度和方向上选择系数，来源图与空间权重均为空，使用诊断前应检查。
 
 `crop_region` 位于第一张原始输入的坐标系中。`transforms[i]` 将参考图原始坐标映射到

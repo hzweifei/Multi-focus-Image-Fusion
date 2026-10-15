@@ -45,11 +45,10 @@ private:
         QSpinBox* max_levels = nullptr;
         QSpinBox* activity_window_size = nullptr;
     };
-    /// 可选筛帧、GFG 聚焦度量与快速引导滤波各有独立参数，切换方法时全部保留。
+    /// GFG 聚焦度量与快速引导滤波各有独立参数，切换方法时全部保留。
     struct GfgFgfFields {
         QWidget* panel = nullptr;
         QSpinBox* local_mean_window_size = nullptr;
-        QDoubleSpinBox* selection_ratio = nullptr;
         QDoubleSpinBox* gfg_threshold = nullptr;
         QSpinBox* guided_radius = nullptr;
         QDoubleSpinBox* guided_epsilon = nullptr;
