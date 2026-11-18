@@ -19,8 +19,8 @@ struct FocusMaps {
 };
 
 /// 计算灰度图的非负清晰度响应，输出同尺寸 CV_32FC1。
-/// gray 应为归一化浮点图，method 应为合法枚举，window 应为已校验的正奇数。
-/// 二阶差分或梯度能量经 window×window 局部平均，以降低单个像素噪声的影响。
+/// gray 应为 [0,1] 归一化浮点图，method 应为合法枚举，window 应为已校验的正奇数。
+/// 二阶差分、梯度能量或灰度加权梯度能量经 window×window 局部平均。
 cv::Mat focusMeasure(const cv::Mat& gray, FocusMeasure method, int window);
 
 /// 生成灰度图、清晰度响应和初始决策权重；决策生成后立即释放清晰度响应。

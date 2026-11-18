@@ -134,7 +134,8 @@ void addRegistrationMetadata(nb::dict& output, const cv::Rect& crop_region,
 void bindOptions(nb::module_& module) {
     nb::enum_<mif::FocusMeasure>(module, "FocusMeasure")
         .value("MODIFIED_LAPLACIAN", mif::FocusMeasure::ModifiedLaplacian)
-        .value("TENENGRAD", mif::FocusMeasure::Tenengrad);
+        .value("TENENGRAD", mif::FocusMeasure::Tenengrad)
+        .value("MODIFIED_TENENGRAD", mif::FocusMeasure::ModifiedTenengrad);
     nb::enum_<mif::MotionModel>(module, "MotionModel", "ECC 运动模型；SIFT 固定求解单应性，不使用此选择。")
         .value("TRANSLATION", mif::MotionModel::Translation)
         .value("AFFINE", mif::MotionModel::Affine)
@@ -145,7 +146,7 @@ void bindOptions(nb::module_& module) {
         .def_rw("include_weight_maps", &mif::FusionOptionsBase::include_weight_maps);
     nb::class_<mif::RegistrationOptionsBase>(module, "RegistrationOptionsBase", "配准参数公共基类；请使用具体方法的参数类。")
         .def_rw("max_working_dimension", &mif::RegistrationOptionsBase::max_working_dimension);
-    nb::class_<mif::FocusMeasureOptions>(module, "FocusMeasureOptions", "清晰度指标及统计窗口，供双尺度引导滤波和拉普拉斯金字塔分别配置。")
+    nb::class_<mif::FocusMeasureOptions>(module, "FocusMeasureOptions", "清晰度指标及统计窗口；GFF 与金字塔默认使用改进 Tenengrad：逐点计算 (Gx²+Gy²)/(g²+0.001)，再取局部均值，g 为 [0,1] 灰度，分母范围为 [0.001,1.001]。")
         .def(nb::init<>())
         .def_rw("measure", &mif::FocusMeasureOptions::measure)
         .def_rw("window_size", &mif::FocusMeasureOptions::window_size);

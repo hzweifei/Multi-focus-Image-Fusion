@@ -5,12 +5,16 @@ namespace mif::detail::fusion {
 
 std::vector<cv::Mat> decisionWeights(const std::vector<cv::Mat>& scores) {
     cv::Mat maximum = scores.front().clone();
-    for (const auto& score : scores) cv::max(maximum, score, maximum);
+    for (size_t i = 1; i < scores.size(); ++i) cv::max(maximum, scores[i], maximum);
+    // 所有帧共用同一近似并列阈值，只计算一次，避免逐帧创建阈值图。
+    maximum -= 1e-8f;
     std::vector<cv::Mat> weights;
+    weights.reserve(scores.size());
+    cv::Mat mask;
     for (const auto& score : scores) {
-        cv::Mat mask, weight;
+        cv::Mat weight;
         // 将近似并列的最大响应共同标记，随后平均分配权重，避免平坦区域偏向首图。
-        cv::compare(score, maximum - 1e-8f, mask, cv::CMP_GE);
+        cv::compare(score, maximum, mask, cv::CMP_GE);
         mask.convertTo(weight, CV_32F, 1.0 / 255.0);
         weights.push_back(weight);
     }

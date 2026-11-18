@@ -204,8 +204,14 @@ std::unique_ptr<mif::FusionOptionsBase> methodOptions(const std::string& method)
 void writeOptions(cv::FileStorage& json, const mif::FusionOptionsBase& options) {
     json << "fusion_options" << "{" << "include_weight_maps" << static_cast<int>(options.include_weight_maps);
     const auto focus = [&](const mif::FocusMeasureOptions& value) {
-        json << "focus_measure" << (value.measure == mif::FocusMeasure::Tenengrad ? "tenengrad" : "modified_laplacian")
-             << "focus_window_size" << value.window_size;
+        const char* name;
+        switch (value.measure) {
+        case mif::FocusMeasure::ModifiedLaplacian: name = "modified_laplacian"; break;
+        case mif::FocusMeasure::Tenengrad: name = "tenengrad"; break;
+        case mif::FocusMeasure::ModifiedTenengrad: name = "modified_tenengrad"; break;
+        default: throw std::invalid_argument("Unknown focus measure");
+        }
+        json << "focus_measure" << name << "focus_window_size" << value.window_size;
     };
     if (const auto* gff = dynamic_cast<const mif::GuidedFilterFusionOptions*>(&options)) {
         focus(gff->focus);

@@ -7,6 +7,7 @@
 
 - 五种传统融合方法：双尺度引导滤波（GFF）、拉普拉斯金字塔、块方差（参考项目称 DCT）、DTCWT 双树复小波、GFG-FGF。
   各方法独立配置；GFF 和金字塔使用 OpenCV `ximgproc`，GFG-FGF 使用论文中的聚焦度量，并采用自定义的 G 优先决策和两阶段快速引导滤波。
+  GFF 和金字塔默认使用改进 Tenengrad：在 `[0,1]` 灰度上逐点计算 `(Gx²+Gy²)/(g²+0.001)`，再取 7×7 局部平均；也可选择普通 Tenengrad 或改进拉普拉斯。
 - 可选 ECC 配准（平移 / 仿射 / 单应性）或 SIFT + RANSAC 单应性配准，自动裁剪共同有效区域。
   配准与融合可独立调用，也可一步完成。
 - 支持灰度 / BGR、8 位和 16 位无符号整数、`[0,1]` float32；输出保留输入位深与通道数。
@@ -24,6 +25,7 @@
 压缩包包含 Qt/OpenCV 运行依赖、使用说明和示例图片，无需配置开发环境。
 首次试用可添加包内两张 `focus_*.png`，再点击“开始融合”。
 发布页同时提供 SHA256 校验文件；标记为 Pre-release 的版本用于测试反馈。
+本轮发行版本为 `v0.3.0-preview.2`，对应 Python 包 `0.3.0rc2` 和 C++ SDK `0.3.0`。
 
 从 0.2 升级到 0.3 时，请将桌面 ZIP 解压到新目录。C++ 调用方需要重新编译，
 Python 需要更新完整包；GFG-FGF 已移除 `selection_ratio`，详见
@@ -96,7 +98,7 @@ cmake --build build/desktop --config Release --parallel
 mif::EccRegistrationOptions registration_options;
 registration_options.motion_model = mif::MotionModel::Affine;
 mif::GuidedFilterFusionOptions fusion_options;
-fusion_options.focus.window_size = 9;
+fusion_options.focus.window_size = 7;
 
 auto result = mif::registerAndFuse(images, registration_options, fusion_options); // images: std::vector<cv::Mat>
 cv::Mat fused = result.fusion.image;
@@ -105,6 +107,8 @@ cv::Mat fused = result.fusion.image;
 
 也可先 `registerImages()` 再 `fuse()`，与组合入口采用相同数据路径。
 完整结果约定、SDK 接入及旧接口迁移见 [C++ SDK](docs/sdk.md)。
+若外层已经并行处理多个批次，可在启动工作线程前调用一次 `cv::setNumThreads(1)`，
+让核心的帧调度与 OpenCV 算子串行执行；具体用法见[运行时线程配置](docs/build.md#运行时线程配置)。
 
 ### Python
 
@@ -121,6 +125,21 @@ fused = result["image"]  # NumPy；彩色为 BGR
 `mif.fuse()` 只返回图像；`mif.fuse_detailed()` 额外返回方法支持的诊断；
 `mif.register_images()` 仅配准。DTCWT 没有单一空间来源图，`source_index_map=None`、`weight_maps=[]`。
 配置、所有权和返回字典见 [Python 接口](bindings/python/README.md)。
+
+另有独立的 [Python GFF 实现](examples/python/gff.py)，只依赖 NumPy 和
+`opencv-contrib-python`。将 `gff.py` 与调用脚本放在同一目录后，可传入 8 位灰度批次：
+
+```python
+from gff import gff_fuse
+
+fused = gff_fuse(images)  # uint8 (N,H,W,1) -> (1,H,W,1)
+# 只融合矩形内部，坐标为左上角 x、y 和宽、高，须位于图像内。
+fused = gff_fuse(images, roi=(x, y, width, height), workers=1)
+```
+
+N 为正奇数，H、W 不固定；N=1 时直接返回独立副本。ROI 框外保留输入中间帧的原始像素。
+独立脚本的 `workers=1` 关闭自身的帧并行；OpenCV 自身线程单独配置，见上面的线程说明。
+`mif` 绑定使用前述图像列表接口，两者的输入与输出格式不同。
 
 使用 G 优先的 GFG-FGF 方法时，选择 `GfgFgfFusionOptions`。
 该方法始终使用全部输入焦面，分别滤波四邻域响应 G 和均值残差 R。

@@ -94,6 +94,32 @@ cmake --build build/local --config Release --target mif_wheel
 outputs/Release/app/mif_desktop.exe
 ```
 
+### 运行时线程配置
+
+若调用方已用线程池并行处理多个图像批次，可在启动这些工作线程前设置一次：
+
+```cpp
+cv::setNumThreads(1);
+```
+
+这会让使用同一 OpenCV 运行库的算子和本项目核心的帧调度串行执行，避免与外层任务争抢线程。
+它是全局配置，不应在每次融合调用中设置，也不要在其他线程正在使用 OpenCV 时修改。
+本轮 GFF 提速采用算子和缓冲复用，沿用已有线程策略。
+
+独立脚本 `examples/python/gff.py` 的 `workers` 控制自身的帧线程数；设为 1 仍需单独控制
+OpenCV 算子的线程数。外层已有线程池时，可在主线程初始化一次，再提交融合任务：
+
+```python
+import cv2
+from gff import gff_fuse
+
+cv2.setNumThreads(1)  # 启动外层线程池之前设置一次。
+fused = gff_fuse(images, workers=1)
+```
+
+这里的 Python 设置只针对独立脚本使用的 `cv2`。`mif` 绑定可能加载另一套 OpenCV DLL，
+不能据此假定 `cv2.setNumThreads()` 同时设置了 C++ 绑定的线程数。
+
 ## 交付目录
 
 完整构建会通过 `mif_outputs` 按配置整理产物；未启用的组件不会生成。
@@ -163,7 +189,7 @@ GitHub Release 附件使用完整的便携 ZIP。使用者解压后运行 `mif_d
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 `
-  -Version v0.3.0-preview.1 `
+  -Version v0.3.0-preview.2 `
   -ExpectedCommit (git rev-parse HEAD) `
   -RuntimeDirectory '<Visual Studio>/VC/Redist/MSVC/<版本>/x64/Microsoft.VC143.CRT' `
   -AdditionalNoticesDirectory 'outputs/release-notices' `
@@ -171,7 +197,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 `
 ```
 
 脚本要求 x64 MSVC 构建已配置，并由同名构建及测试预设启用桌面程序、交付目录和测试。
-发行标签中的三段版本必须与已配置的 SDK 版本一致，例如 `v0.3.0-preview.1` 对应 `0.3.0`；
+发行标签中的三段版本必须与已配置的 SDK 版本一致，例如 `v0.3.0-preview.2` 对应 `0.3.0`；
 不匹配时会在打包前报错。升级版本后先重新执行 CMake 配置。
 算法、界面、构建输入和子模块必须与指定提交一致；允许尚未提交的发布文档修改仅限
 `README.md`、本页及打包脚本，并在包内记录。补充说明须覆盖实际随包依赖；例如 Qt、

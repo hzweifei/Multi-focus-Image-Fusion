@@ -16,8 +16,8 @@ if any(image is None for image in images):
     raise SystemExit("One or more images could not be read")
 # 参数类型决定方法，调用入口统一为 mif.fuse。
 options = mif.GuidedFilterFusionOptions()
-options.focus.measure = mif.FocusMeasure.MODIFIED_LAPLACIAN
-options.focus.window_size = 9
+options.focus.measure = mif.FocusMeasure.MODIFIED_TENENGRAD  # 默认：梯度能量 / (归一化灰度² + 0.001)。
+options.focus.window_size = 7
 options.detail_radius = 3
 # 可替换为 LaplacianPyramidFusionOptions、BlockVarianceFusionOptions、
 # DtcwtFusionOptions 或 GfgFgfFusionOptions，并直接设置该方法的字段。

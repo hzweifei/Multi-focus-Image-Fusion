@@ -745,7 +745,15 @@ void verifyFusionSettings() {
         require(fields.window_size->minimum() == 1 && fields.window_size->maximum() == 255 &&
                 fields.window_size->singleStep() == 2 && fields.detail_radius->minimum() == 1 && fields.detail_radius->maximum() == 255,
                 "Fusion window and radius ranges differ from the supported ranges");
-        require(fields.focus->count() == 2, "Fusion focus controls are incomplete");
+        require(fields.focus->count() == 3, "Fusion focus controls are incomplete");
+        require(fields.focus->currentData().toInt() == static_cast<int>(mif::FocusMeasure::ModifiedTenengrad),
+                "Both fusion panels must initially select modified Tenengrad");
+        require(fields.window_size->value() == 7,
+                "Both fusion panels must initially use a 7x7 focus window");
+        for (const auto measure : {mif::FocusMeasure::ModifiedLaplacian, mif::FocusMeasure::Tenengrad,
+                                   mif::FocusMeasure::ModifiedTenengrad})
+            require(fields.focus->findData(static_cast<int>(measure)) >= 0,
+                    "Fusion focus selector is missing a supported measure");
     }
     // 融合正则项共享官方引导滤波的数值下限；ECC 收敛阈值仍独立保持 1e-8。
     for (auto* epsilon : {controls.guided.detail_epsilon, controls.base_epsilon,
@@ -770,6 +778,23 @@ void verifyFusionSettings() {
             "New fusion method integer ranges are incorrect");
     require(controls.gfg_fgf_threshold->minimum() == 0 && controls.gfg_fgf_threshold->maximum() == 1,
             "GFG-FGF threshold range is incorrect");
+
+    // 三种清晰度指标都可写入独立快照；切换融合方法后，另一种方法的选择保持不变。
+    auto focus_values = customFusionValues();
+    for (const auto method : {FusionMethod::GuidedFilter, FusionMethod::LaplacianPyramid}) {
+        for (const auto measure : {mif::FocusMeasure::ModifiedLaplacian, mif::FocusMeasure::Tenengrad,
+                                   mif::FocusMeasure::ModifiedTenengrad}) {
+            if (method == FusionMethod::GuidedFilter) focus_values.guided_filter.focus.measure = measure;
+            else focus_values.laplacian_pyramid.focus.measure = measure;
+            focus_values.method = method;
+            controls.setValues(focus_values);
+            controls.requireValues(focus_values);
+            focus_values.method = method == FusionMethod::GuidedFilter
+                ? FusionMethod::LaplacianPyramid : FusionMethod::GuidedFilter;
+            controls.selectMethod(focus_values.method);
+            controls.requireValues(focus_values);
+        }
+    }
 
     auto edited = customFusionValues();
     controls.setValues(edited);
@@ -854,7 +879,7 @@ void verifyFusionSelection(const QStringList& paths, const std::vector<cv::Mat>&
         auto* registration = window.findChild<QGroupBox*>("registrationSettings");
         require(registration != nullptr, "Registration group is missing from the fusion workflow");
         for (auto* selector : {controls.method, controls.guided.focus, controls.pyramid.focus}) {
-            require(selector->count() == (selector == controls.method ? 5 : 2),
+            require(selector->count() == (selector == controls.method ? 5 : 3),
                     "Fusion fixture has an unexpected method or focus selector");
             const int last = selector->count() - 1;
             const auto label = selector->itemText(last);
@@ -864,6 +889,11 @@ void verifyFusionSelection(const QStringList& paths, const std::vector<cv::Mat>&
         }
         auto options = customFusionValues();
         options.method = method;
+        // 新指标在重排后位于首项，确保真正执行时传递枚举数据，而不是下拉框序号。
+        if (method == FusionMethod::GuidedFilter)
+            options.guided_filter.focus.measure = mif::FocusMeasure::ModifiedTenengrad;
+        else if (method == FusionMethod::LaplacianPyramid)
+            options.laplacian_pyramid.focus.measure = mif::FocusMeasure::ModifiedTenengrad;
         controls.setValues(options);
         controls.requireValues(options);
         require(controls.method->currentIndex() != static_cast<int>(method),

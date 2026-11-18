@@ -114,9 +114,12 @@ FusionSettings::FusionSettings(QWidget* parent) : QGroupBox(parent) {
         fields.focus->setObjectName(prefix + "FocusMeasure");
         fields.focus->addItem(QStringLiteral("改进拉普拉斯"), static_cast<int>(FocusMeasure::ModifiedLaplacian));
         fields.focus->addItem(QStringLiteral("Tenengrad 梯度"), static_cast<int>(FocusMeasure::Tenengrad));
+        fields.focus->addItem(QStringLiteral("改进 Tenengrad"), static_cast<int>(FocusMeasure::ModifiedTenengrad));
         fields.focus->setCurrentIndex(fields.focus->findData(static_cast<int>(focus.measure)));
         fields.focus->setToolTip(QStringLiteral(
             "比较各张图片局部的清晰程度。改进拉普拉斯使用二阶差分，Tenengrad 使用梯度能量。\n"
+            "改进 Tenengrad 逐点计算 (Gx² + Gy²) / (g² + 0.001)，再取局部平均；g 为 [0, 1] 的归一化灰度。\n"
+            "分母范围为 [0.001, 1.001]。\n"
             "该指标只属于当前融合方法，另一种方法可以使用不同设置。"));
         addParameter(form, QStringLiteral("清晰度指标"), fields.focus, label_width);
         fields.window_size = createOddWindow(fields.panel, prefix + "FocusWindow", 255, focus.window_size);

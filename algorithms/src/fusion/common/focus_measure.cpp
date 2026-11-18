@@ -9,7 +9,8 @@
 namespace mif::detail::fusion {
 
 void validateFocusOptions(const FocusMeasureOptions& options) {
-    if (options.measure != FocusMeasure::ModifiedLaplacian && options.measure != FocusMeasure::Tenengrad)
+    if (options.measure != FocusMeasure::ModifiedLaplacian && options.measure != FocusMeasure::Tenengrad &&
+        options.measure != FocusMeasure::ModifiedTenengrad)
         throw std::invalid_argument("Unknown focus measure");
     if (options.window_size < 1 || options.window_size > 255 || options.window_size % 2 == 0)
         throw std::invalid_argument("Focus window must be odd and within [1, 255]");
@@ -17,11 +18,23 @@ void validateFocusOptions(const FocusMeasureOptions& options) {
 
 cv::Mat focusMeasure(const cv::Mat& gray, FocusMeasure method, int window) {
     cv::Mat x, y, energy;
-    if (method == FocusMeasure::Tenengrad) {
+    if (method == FocusMeasure::Tenengrad || method == FocusMeasure::ModifiedTenengrad) {
         // Tenengrad：E = Gx² + Gy²，以一阶梯度的平方和衡量局部边缘强度。
         cv::Sobel(gray, x, CV_32F, 1, 0, 3);
         cv::Sobel(gray, y, CV_32F, 0, 1, 3);
-        energy = x.mul(x) + y.mul(y);
+        // 梯度只使用一次，平方及相加直接复用其缓冲，不另建两张平方响应图。
+        cv::multiply(x, x, x);
+        cv::multiply(y, y, y);
+        cv::add(x, y, x);
+        energy = x;
+        if (method == FocusMeasure::ModifiedTenengrad) {
+            // 改进 Tenengrad：先按该点的归一化灰度加权，再统计局部响应。
+            // g∈[0,1]，分母在 [0.001,1.001]；常数项防止黑色像素除零，暗区响应可被放大。
+            // 必须逐点使用 g²+0.001 作分母，不能先平均分子和分母再相除。
+            cv::multiply(gray, gray, y);
+            cv::add(y, cv::Scalar(0.001f), y);
+            cv::divide(energy, y, energy);
+        }
     } else {
         // 改进拉普拉斯：E = |Dxx| + |Dyy|。先分别取绝对值再求和，
         // 防止两个方向的二阶响应正负抵消。核的整体正负号不影响该指标。

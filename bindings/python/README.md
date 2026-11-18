@@ -17,7 +17,7 @@ Windows 包和 wheel 收集核心库及 OpenCV DLL，导入时自动注册包内
 
 ## 从 0.2 升级到 0.3
 
-当前 Python 包版本为 `0.3.0rc1`，配套 C++ SDK 为 `0.3.0`。
+当前 Python 包版本为 `0.3.0rc2`，配套 C++ SDK 为 `0.3.0`。
 删除代码中对 `options.selection_ratio` 的赋值；GFG-FGF 始终使用全部输入帧。
 原先默认值为 0 的调用继续使用全部焦面，原先设置非零筛选比例的调用会改变行为。
 
@@ -38,6 +38,13 @@ Windows 包和 wheel 收集核心库及 OpenCV DLL，导入时自动注册包内
 两个阶段均要求至少两张同尺寸、同精度、同通道图像，支持灰度或 BGR、
 `uint8`／`uint16`／`float32`。浮点值必须有限且在 `[0, 1]` 内。
 接受只读数组和非连续切片，返回数组自行持有底层存储。
+
+仓库另提供独立的 [`examples/python/gff.py`](https://github.com/hzweifei/Multi-focus-Image-Fusion/blob/HEAD/examples/python/gff.py)，
+依赖 NumPy 和 `opencv-contrib-python`，无需安装 `mif`。它的 `gff_fuse()` 使用
+`uint8 (N,H,W,1)` 输入和 `(1,H,W,1)` 输出，要求 N 为正奇数，支持单帧直接返回及 ROI。
+这是独立脚本的接口；本页 `mif` 绑定继续接收图像数组列表，并支持上面的三种精度与灰度/BGR。
+外层已有并行任务时，独立脚本可设 `workers=1`；OpenCV 自身线程需在任务启动前单独配置，
+详见[运行时线程配置](https://github.com/hzweifei/Multi-focus-Image-Fusion/blob/HEAD/docs/build.md#运行时线程配置)。
 
 只融合已对齐图片时直接调用 `fuse(images)`，默认使用引导滤波融合。
 需要检查配准结果或复用同一组配准图时，可以分两步调用：
@@ -83,8 +90,13 @@ result = mif.register_and_fuse(images, registration_options, fusion_options)
 | `DtcwtFusionOptions` | 双树复小波系数融合：`max_levels=4`、`activity_window_size=3` |
 | `GfgFgfFusionOptions` | G 优先与两阶段快速引导滤波：`local_mean_window_size=7`、`gfg_threshold=0.005`、`guided_radius=5`、`guided_epsilon=0.3`、`guided_subsample_factor=4` |
 
-`FocusMeasureOptions` 包含 `measure=FocusMeasure.MODIFIED_LAPLACIAN` 与 `window_size=9`。
-也可以选择 `FocusMeasure.TENENGRAD`。GFF 与金字塔各自持有独立的清晰度配置。
+`FocusMeasureOptions` 包含 `measure=FocusMeasure.MODIFIED_TENENGRAD` 与 `window_size=7`。
+GFF 与金字塔各自持有独立的清晰度配置，默认均使用改进 Tenengrad：在归一化灰度
+`g∈[0,1]` 上，先逐点计算 `(Gx²+Gy²)/(g²+0.001)`，再取局部均值；`Gx`、`Gy` 为
+3×3 Sobel 梯度。分母范围是 `[0.001,1.001]`，这里的灰度值不是原始 8 位或 16 位像素值。
+也可选择 `FocusMeasure.MODIFIED_LAPLACIAN` 或 `FocusMeasure.TENENGRAD`。
+如需复现之前的默认清晰度配置，请显式设置 `options.focus.measure = mif.FocusMeasure.MODIFIED_LAPLACIAN`
+和 `options.focus.window_size = 9`。
 
 块方差的 `block_size` 范围为 `[2,128]`，`consistency_window_size` 为 `[1,31]` 内的奇数，
 窗口单位是块。该方法对应参考仓库的 `dct` 标识，当前实现按空间域块方差选图。

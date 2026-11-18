@@ -183,11 +183,12 @@ class FusionTests(unittest.TestCase):
         for config in (guided, pyramid):
             self.assertIsInstance(config, mif.FusionOptionsBase)
             self.assertFalse(config.include_weight_maps)
-            self.assertEqual(config.focus.measure, mif.FocusMeasure.MODIFIED_LAPLACIAN)
-            self.assertEqual(config.focus.window_size, 9)
+            self.assertEqual(config.focus.measure, mif.FocusMeasure.MODIFIED_TENENGRAD)
+            self.assertEqual(config.focus.window_size, 7)
             self.assertEqual(config.detail_radius, 3)
             self.assertEqual(config.detail_epsilon, 0.0001)
-        self.assertEqual(mif.FocusMeasureOptions().window_size, 9)
+        self.assertEqual(mif.FocusMeasureOptions().window_size, 7)
+        self.assertEqual(mif.FocusMeasureOptions().measure, mif.FocusMeasure.MODIFIED_TENENGRAD)
         self.assertEqual(guided.base_radius, 15)
         self.assertEqual(guided.base_epsilon, 0.01)
         self.assertEqual(pyramid.max_levels, 5)
@@ -200,17 +201,44 @@ class FusionTests(unittest.TestCase):
                     setattr(config, removed, 1)
             with self.assertRaises(TypeError):
                 config.focus = mif.BlockVarianceFusionOptions()
-        guided.focus.window_size = 7
+        guided.focus.window_size = 5
         guided.focus.measure = mif.FocusMeasure.TENENGRAD
         guided.detail_radius = 4
-        self.assertEqual(pyramid.focus.window_size, 9)
-        self.assertEqual(pyramid.focus.measure, mif.FocusMeasure.MODIFIED_LAPLACIAN)
+        self.assertEqual(pyramid.focus.window_size, 7)
+        self.assertEqual(pyramid.focus.measure, mif.FocusMeasure.MODIFIED_TENENGRAD)
         self.assertEqual(pyramid.detail_radius, 3)
         pyramid.focus.window_size = 11
         pyramid.detail_radius = 6
-        self.assertEqual(guided.focus.window_size, 7)
+        self.assertEqual(guided.focus.window_size, 5)
         self.assertEqual(guided.detail_radius, 4)
-        self.assertEqual(mif.GuidedFilterFusionOptions().focus.window_size, 9)
+        self.assertEqual(mif.GuidedFilterFusionOptions().focus.window_size, 7)
+
+    def test_focus_measure_choices_and_brightness_weighting(self):
+        """同纹理亮度偏移保留梯度；新指标应偏向较暗图，旧指标仍应并列均分。"""
+        yy, xx = np.indices((41, 53))
+        # 使用二进制可精确表示的强度，消除亮度平移引起的浮点梯度舍入差异。
+        # 2 像素棋盘使默认 7×7 统计窗口都包含梯度，避免平坦区合理的等权决策。
+        dark = (0.125 + 0.125 * ((xx // 2 + yy // 2) % 2)).astype(np.float32)
+        bright = dark + np.float32(0.5)
+        average = (dark + bright) * np.float32(0.5)
+        for option_type in (mif.GuidedFilterFusionOptions, mif.LaplacianPyramidFusionOptions):
+            for measure in (mif.FocusMeasure.MODIFIED_LAPLACIAN, mif.FocusMeasure.TENENGRAD,
+                            mif.FocusMeasure.MODIFIED_TENENGRAD):
+                with self.subTest(method=option_type, measure=measure):
+                    options = option_type()
+                    options.focus.measure = measure
+                    options.include_weight_maps = True
+                    self.assertEqual(options.focus.measure, measure)
+                    result = mif.fuse_detailed([dark, bright], options)
+                    modified = measure == mif.FocusMeasure.MODIFIED_TENENGRAD
+                    expected = dark if modified else average
+                    np.testing.assert_allclose(result["image"], expected, atol=2e-6, rtol=0)
+                    np.testing.assert_allclose(result["weight_maps"][0], 1.0 if modified else 0.5,
+                                               atol=2e-6, rtol=0)
+                    np.testing.assert_allclose(result["weight_maps"][1], 0.0 if modified else 0.5,
+                                               atol=2e-6, rtol=0)
+        # 不传参数的便捷入口也应使用新的默认评分，而不只是参数对象显示默认值。
+        np.testing.assert_allclose(mif.fuse([dark, bright]), dark, atol=2e-6, rtol=0)
 
     def test_nested_option_value_assignment_and_lifetime(self):
         """focus 读取是内部引用，整体赋值复制数值，子对象能保留父配置的生命周期。"""

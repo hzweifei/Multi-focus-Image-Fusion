@@ -98,7 +98,9 @@ SIFT 固定估计单应性；ECC 支持 `Translation`、`Affine`、`Homography`�
 变换时的最长边；重采样始终在原分辨率进行。融合基类 `FusionOptionsBase` 提供
 `include_weight_maps`，默认关闭，只控制返回的权重诊断。二者独立，不共用一个总配置。
 
-`FocusMeasureOptions` 包含 `measure` 与 `window_size`；GFF 和金字塔各自持有 `focus`。
+`FocusMeasureOptions` 包含 `measure` 与 `window_size`；GFF 和金字塔各自持有 `focus`，默认窗口边长为 7，即 7×7 局部平均。
+默认 `measure=FocusMeasure::ModifiedTenengrad`，使用 `(Gx²+Gy²)/(g²+0.001)` 后再取局部均值，
+`g` 为 `[0,1]` 归一化灰度。另可选择 `FocusMeasure::Tenengrad` 或 `FocusMeasure::ModifiedLaplacian`。
 窗口名以 `window_size` 结尾时表示边长，`radius` 表示半径。块方差的一致性窗口
 以块为单位，小波活动度窗口以子带采样点为单位，详见对应头文件。
 

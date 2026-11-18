@@ -28,7 +28,7 @@ __all__ = [
     "EccRegistrationOptions", "SiftRegistrationOptions",
     "fuse", "fuse_detailed", "register_images", "register_and_fuse",
 ]
-__version__ = "0.3.0rc1"
+__version__ = "0.3.0rc2"
 
 
 def _prepare(images):
@@ -64,6 +64,10 @@ def fuse(images, options=None):
         GfgFgfFusionOptions: local_mean_window_size、gfg_threshold、
             guided_radius、guided_epsilon、guided_subsample_factor。
         focus 包含 measure 和 window_size；读取得到内部引用，整体赋值复制数值。
+        GFF 与金字塔的 focus.measure 默认是 FocusMeasure.MODIFIED_TENENGRAD：
+            对归一化灰度 g 先逐点计算 (Gx²+Gy²)/(g²+0.001)，再做局部平均。
+            分母范围为 [0.001,1.001]。
+            也可选 MODIFIED_LAPLACIAN 或 TENENGRAD；window_size 默认 7。
         所有方法继承 include_weight_maps，默认为 False。
 
     所有引导滤波 epsilon 须在 [1e-6, float32 最大有限值]。

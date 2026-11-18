@@ -19,14 +19,26 @@ cv::Mat blendGuided(const std::vector<cv::Mat>& images,
                     const std::vector<cv::Mat>& detail_weights,
                     int radius, const ProgressCallback& progress) {
     cv::Mat result = cv::Mat::zeros(images.front().size(), images.front().type());
+    // 每帧尺寸相同，复用工作缓冲；输入保持只读，不能借其存储写入细节层。
+    cv::Mat base, detail, expanded_weight;
+    const int channels = images.front().channels();
     for (size_t i = 0; i < images.size(); ++i) {
         report(progress, 70 + static_cast<int>(25 * i / images.size()), "blend");
-        cv::Mat base;
         cv::blur(images[i], base, {2 * radius + 1, 2 * radius + 1});
+        cv::subtract(images[i], base, detail);
         // 每张图像先累加加权基础层，再补入加权细节，所有颜色通道共用标量权重。
-        result += base.mul(expandWeight(base_weights[i], base.channels()));
-        const cv::Mat detail = images[i] - base;
-        result += detail.mul(expandWeight(detail_weights[i], base.channels()));
+        // accumulateProduct 直接累加乘积，省去两张加权层临时图；末位可能有浮点舍入差。
+        if (channels == 1) {
+            cv::accumulateProduct(base, base_weights[i], result);
+            cv::accumulateProduct(detail, detail_weights[i], result);
+        } else {
+            const cv::Mat base_channels[]{base_weights[i], base_weights[i], base_weights[i]};
+            cv::merge(base_channels, 3, expanded_weight);
+            cv::accumulateProduct(base, expanded_weight, result);
+            const cv::Mat detail_channels[]{detail_weights[i], detail_weights[i], detail_weights[i]};
+            cv::merge(detail_channels, 3, expanded_weight);
+            cv::accumulateProduct(detail, expanded_weight, result);
+        }
     }
     return result;
 }

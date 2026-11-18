@@ -315,11 +315,12 @@ J_i(x,y)=I_i\!\left(\pi(H_i[x,y,1]^T)\right)
 - **局部分数**用于比较同一位置在不同图像中哪张更清晰。例如，一张图的前景清晰、另一张图的背景清晰，需要分区域比较。
 - **全局分数**描述整张图的总体细节强度，可能掩盖只占少量像素的清晰区域。
 
-后面介绍三种观察角度：
+后面介绍几种观察角度：
 
 | 指标 | 测量什么 | 直观理解 |
 |---|---|---|
 | Tenengrad | 一阶梯度的平方和 | 灰度变化有多陡 |
+| 改进 Tenengrad | 一阶梯度平方和除以该点灰度平方加 0.001 | 相同梯度下，较暗位置获得更高响应 |
 | 改进拉普拉斯 | 两个方向二阶差分的绝对值之和 | 灰度变化是否突然加快或减慢 |
 | 局部方差 | 灰度偏离区域均值的程度 | 区域内部的明暗差异有多大 |
 
@@ -356,6 +357,16 @@ S^{\mathrm{TG}} &= M_w(G_x^2+G_y^2)
 先平方再相加，使从暗到亮、从亮到暗的变化都产生正响应；最后取局部均值。比较同一条边缘时，较陡的变化通常产生较强的响应。
 
 例如，沿一行像素观察黑白分界，灰度从 0.1 直接升到 0.9，比在多步中缓慢上升更集中。Tenengrad 就是在统计这类变化的强度。噪声同样会造成突然变化，因此高分需要结合纹理和拍摄条件理解。
+
+本项目还提供自定义的**改进 Tenengrad**，并将其作为 GFF 和拉普拉斯金字塔的默认清晰度指标：
+
+```math
+S^{\mathrm{MTG}}=M_w\left(\frac{G_x^2+G_y^2}{g^2+0.001}\right)
+```
+
+先在每个像素计算一阶梯度平方和，再除以**该点**的灰度平方加 0.001，最后取局部均值；不能先平均梯度能量，再除以中心灰度平方或窗口平均灰度平方加 0.001。这里的 $`g`$ 是归一化到 `[0,1]` 的灰度，分母在 `[0.001,1.001]` 之间；0.001 是固定稳定项，使黑色像素也不会除零。直接使用原始 8 位灰度会改变这一指标的尺度。
+
+相同梯度能量下，灰度越亮，响应越小。例如能量同为 0.1，灰度为 0.2 时响应约为 2.4390，灰度为 0.8 时约为 0.1560；近黑位置的倍率可接近 1000，因此暗部噪声的梯度也可能被明显放大。这仍是一阶导数能量指标，平方和灰度加权不会把它变成二阶响应。该权重不保证曝光不变性，也不意味着所有场景都优于普通 Tenengrad。
 
 ### 3.4 改进拉普拉斯：用二阶变化衡量清晰度
 
@@ -477,7 +488,7 @@ $`w_i`$ 是待归一化数值，$`W_i`$ 是最终权重；在每个位置，沿�
 
 每种方法只校验自身参数。公共基类的 `include_weight_maps` 默认为 `false`，只控制返回结果是否包含方法提供的权重图，不会关闭算法内部的权重计算；具体含义见第 5 节。
 
-- **清晰度计算。** GFF 和拉普拉斯金字塔先将 BGR 转灰度，灰度输入直接使用原通道；采用 3×3 Sobel 或 `[-1, 2, -1]` 二阶差分，再取局部均值。上述滤波均使用 `BORDER_REFLECT_101`。两种方法各自持有独立的 `FocusMeasureOptions`，默认值和范围列在各自参数表中。
+- **清晰度计算。** GFF 和拉普拉斯金字塔先将 BGR 转灰度，灰度输入直接使用原通道；采用 3×3 Sobel 或 `[-1, 2, -1]` 二阶差分，再取局部均值。默认改进 Tenengrad 在平均前将梯度平方和逐点除以归一化灰度平方加 0.001。上述滤波均使用 `BORDER_REFLECT_101`。两种方法各自持有独立的 `FocusMeasureOptions`，默认值和范围列在各自参数表中。
 - **引导滤波与权重。** GFF 和拉普拉斯金字塔调用 opencv_contrib 的 `cv::ximgproc::guidedFilter`，在完整分辨率上输出 `CV_32F`。[OpenCV 接口][opencv-guided]。GFG-FGF 使用[第 4.5 节](#45-gfg-fgfg-优先与两阶段快速引导滤波)的快速引导滤波。滤波结果用作权重时先裁到 `[0, 1]`，再跨候选图像归一化；归一化工具会移除负值，总和不大于 `1e-12` 时均分。GFG-FGF 第一阶段分别滤波 G、R，保留有符号响应，到第二阶段生成权重时才裁剪。
 - **滤波边界。** 官方引导滤波使用端点重复的 `BORDER_REFLECT`，与上述清晰度计算、早期手写引导滤波的 `BORDER_REFLECT_101` 不同，边界输出不承诺与旧实现逐位一致。
 - **正则项范围。** 融合引导滤波的正则项须有限且位于 `[1e-6, FLT_MAX]`。此范围来自官方 float32 引导滤波的数值要求：过小可能因舍入而难以发挥正则作用，过大会在转换时溢出。GFG-FGF 用双精度估计快速滤波系数，但沿用同一参数约束。Qt 提供 `[1e-6, 1]` 的常用调节范围；ECC 的 `convergence_tolerance` 使用自己的约束。
@@ -495,16 +506,17 @@ GFF 的思路是：**把每张图分成平缓变化的部分和细节部分，�
 本方法为每张输入生成一张与原图同尺寸的决策图 $`P_i`$，按以下过程计算：
 
 1. **转成灰度。** 将第 $`i`$ 张图转为灰度图 $`g_i`$；灰度输入直接使用原通道。
-2. **计算清晰度分数。** `focus.measure` 为 `ModifiedLaplacian` 时，分别计算横、纵二阶差分的绝对值再相加；为 `Tenengrad` 时，计算横、纵 Sobel 梯度的平方和。随后用边长为 `focus.window_size` 的窗口取局部均值，得到分数图 $`S_i`$。
+2. **计算清晰度分数。** 默认 `focus.measure=ModifiedTenengrad`，先计算横、纵 Sobel 梯度平方和，逐点除以 $`g_i^2+0.001`$，再取局部均值；$`g_i`$ 为归一化灰度。也可选择 `ModifiedLaplacian`，计算横、纵二阶差分的绝对值之和；或选择 `Tenengrad`，直接统计横、纵 Sobel 梯度平方和。三种指标都用边长为 `focus.window_size` 的窗口取局部均值，得到分数图 $`S_i`$。
 
 ```math
 \begin{aligned}
 S_i^{\mathrm{ML}} &= M_w\left(\lvert D_{xx}g_i\rvert+\lvert D_{yy}g_i\rvert\right) \\
-S_i^{\mathrm{TG}} &= M_w\left((\mathrm{Sobel}_x\,g_i)^2+(\mathrm{Sobel}_y\,g_i)^2\right)
+S_i^{\mathrm{TG}} &= M_w\left((\mathrm{Sobel}_x\,g_i)^2+(\mathrm{Sobel}_y\,g_i)^2\right) \\
+S_i^{\mathrm{MTG}} &= M_w\left(\frac{(\mathrm{Sobel}_x\,g_i)^2+(\mathrm{Sobel}_y\,g_i)^2}{g_i^2+0.001}\right)
 \end{aligned}
 ```
 
-这里 $`M_w`$ 表示 $`w\times w`$ 均值滤波，$`w`$ 对应 `focus.window_size`；二阶差分使用 `[-1, 2, -1]` 及其转置，Sobel 使用 3×3 核。根据配置选择上述一种分数。
+这里 $`M_w`$ 表示 $`w\times w`$ 均值滤波，$`w`$ 对应 `focus.window_size`；二阶差分使用 `[-1, 2, -1]` 及其转置，Sobel 使用 3×3 核。根据配置选择上述一种分数；第三式为默认，分母使用当前像素的 `[0,1]` 灰度平方加 0.001，先除再平均。
 
 3. **在同一像素位置选候选。** 找出全部输入在位置 $`x`$ 的最大分数，与最大值相差不超过 `1e-8` 的图像共同入选。
 4. **把候选变成决策值。** 唯一候选取 1；有多个候选时均分，其余取 0：
@@ -558,8 +570,8 @@ F=\sum_i W_i^B B_i+\sum_i W_i^D D_i
 
 | 字段 | 默认值 | 范围与作用 |
 |---|---|---|
-| `focus.measure` | `ModifiedLaplacian` | 改进拉普拉斯；也可选 `Tenengrad` |
-| `focus.window_size` | 9 | `[1, 255]` 内的奇数；清晰度局部均值窗口边长，单位为像素 |
+| `focus.measure` | `ModifiedTenengrad` | 改进 Tenengrad；也可选 `ModifiedLaplacian` 或 `Tenengrad` |
+| `focus.window_size` | 7 | `[1, 255]` 内的奇数；默认 7×7 清晰度局部均值窗口，边长单位为像素 |
 | `base_radius` | 15 | `[1, 255]`；基础层与基础权重窗口半径 |
 | `detail_radius` | 3 | `[1, 255]`；细节权重窗口半径 |
 | `base_epsilon` | 0.01 | `[1e-6, FLT_MAX]`；基础权重正则项 |
@@ -582,11 +594,12 @@ F=\sum_i W_i^B B_i+\sum_i W_i^D D_i
 ```math
 \begin{aligned}
 S_i^{\mathrm{ML}} &= M_w\left(\lvert D_{xx}g_i\rvert+\lvert D_{yy}g_i\rvert\right) \\
-S_i^{\mathrm{TG}} &= M_w\left((\mathrm{Sobel}_x\,g_i)^2+(\mathrm{Sobel}_y\,g_i)^2\right)
+S_i^{\mathrm{TG}} &= M_w\left((\mathrm{Sobel}_x\,g_i)^2+(\mathrm{Sobel}_y\,g_i)^2\right) \\
+S_i^{\mathrm{MTG}} &= M_w\left(\frac{(\mathrm{Sobel}_x\,g_i)^2+(\mathrm{Sobel}_y\,g_i)^2}{g_i^2+0.001}\right)
 \end{aligned}
 ```
 
-`ModifiedLaplacian` 使用第一式：横、纵二阶差分分别取绝对值再相加，差分核为 `[-1, 2, -1]` 及其转置。`Tenengrad` 使用第二式：3×3 Sobel 横、纵梯度平方后相加。$`M_w`$ 表示 $`w\times w`$ 局部均值，$`w`$ 对应 `focus.window_size`。
+`ModifiedLaplacian` 使用第一式：横、纵二阶差分分别取绝对值再相加，差分核为 `[-1, 2, -1]` 及其转置。`Tenengrad` 使用第二式：3×3 Sobel 横、纵梯度平方后相加。默认 `ModifiedTenengrad` 使用第三式：先将梯度平方和逐点除以该点归一化灰度平方加 0.001，再统计邻域，灰度范围为 `[0,1]`。$`M_w`$ 表示 $`w\times w`$ 局部均值，$`w`$ 对应 `focus.window_size`。
 
 2. **逐像素生成决策图。** 在每个位置 $`x`$ 比较全部输入的分数，将与最大值相差不超过 `1e-8` 的图像列为候选。唯一候选取 1，多候选均分，其余取 0：
 
@@ -645,8 +658,8 @@ F^k &= \mathrm{up}(F^{k+1})+\bar{L}^k
 
 | 字段 | 默认值 | 范围与作用 |
 |---|---|---|
-| `focus.measure` | `ModifiedLaplacian` | 改进拉普拉斯；也可选 `Tenengrad` |
-| `focus.window_size` | 9 | `[1, 255]` 内的奇数；清晰度局部均值窗口边长，单位为像素 |
+| `focus.measure` | `ModifiedTenengrad` | 改进 Tenengrad；也可选 `ModifiedLaplacian` 或 `Tenengrad` |
+| `focus.window_size` | 7 | `[1, 255]` 内的奇数；默认 7×7 清晰度局部均值窗口，边长单位为像素 |
 | `detail_radius` | 3 | `[1, 255]`；全分辨率细节权重半径 |
 | `detail_epsilon` | 0.0001 | `[1e-6, FLT_MAX]`；细节权重正则项 |
 | `max_levels` | 5 | `[1, 16]`；总层数上限，包含最粗层 |

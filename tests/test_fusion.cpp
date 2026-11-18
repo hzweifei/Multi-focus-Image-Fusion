@@ -40,7 +40,8 @@ void quality() {
         if (channels == 3) cv::cvtColor(sharp, sharp, cv::COLOR_GRAY2BGR);
         const auto stack = focusStack(sharp);
         forEachFocusOptions([&](auto o) {
-            for (auto measure : {mif::FocusMeasure::ModifiedLaplacian, mif::FocusMeasure::Tenengrad}) {
+            for (auto measure : {mif::FocusMeasure::ModifiedLaplacian, mif::FocusMeasure::Tenengrad,
+                                 mif::FocusMeasure::ModifiedTenengrad}) {
                 o.focus.measure = measure;
                 const auto output = mif::fuse(stack, o);
                 const double baseline = std::min(mae(stack[0], sharp), mae(stack[1], sharp));
@@ -143,7 +144,7 @@ void methodOptions() {
             "Default entry did not select guided filter");
     forEachFocusOptions([&](auto options) {
         using Options = decltype(options);
-        require(options.focus.window_size == 9 && options.focus.measure == mif::FocusMeasure::ModifiedLaplacian,
+        require(options.focus.window_size == 7 && options.focus.measure == mif::FocusMeasure::ModifiedTenengrad,
                 "Focus defaults changed");
         const auto original = mif::fuse(images, options);
         options.include_weight_maps = true;
@@ -175,6 +176,86 @@ void methodOptions() {
     });
 }
 
+// 用公开的两组权重和 double 逐像素重建验证 GFF 的分层公式。
+// 不复写评分、决策或引导滤波；能发现复用缓冲时覆盖基础层、用错权重或通道的问题。
+void checkGuidedLayerReconstruction() {
+    for (int depth : {CV_8U, CV_16U, CV_32F}) {
+        for (int channels : {1, 3}) {
+            cv::Mat sharp = texture(49, 67);
+            if (channels == 3) {
+                cv::Mat flipped, inverted;
+                cv::flip(sharp, flipped, 1);
+                cv::subtract(cv::Scalar::all(255), sharp, inverted);
+                cv::merge(std::vector<cv::Mat>{sharp, flipped, inverted}, sharp);
+            }
+            const double range = depth == CV_8U ? 255.0 : depth == CV_16U ? 65535.0 : 1.0;
+            std::vector<cv::Mat> images, originals, normalized, bases;
+            const mif::GuidedFilterFusionOptions defaults;
+            for (int i = 0; i < 5; ++i) {
+                cv::Mat storage;
+                cv::GaussianBlur(sharp, storage, {0, 0}, 1.4 + 0.3 * i);
+                const int left = i * sharp.cols / 5, right = (i + 1) * sharp.cols / 5;
+                const cv::Rect stripe(left, 0, right - left, sharp.rows);
+                sharp(stripe).copyTo(storage(stripe));
+                storage.convertTo(storage, depth, range / 255.0);
+                images.push_back(storage(cv::Rect(2, 2, 63, 45)));
+                require(!images.back().isContinuous(), "Reconstruction fixture must use strided inputs");
+                originals.push_back(images.back().clone());
+                cv::Mat frame, base;
+                images.back().convertTo(frame, CV_32F, 1.0 / range);
+                cv::blur(frame, base, {2 * defaults.base_radius + 1, 2 * defaults.base_radius + 1});
+                normalized.push_back(frame);
+                bases.push_back(base);
+            }
+            auto options = defaults;
+            options.include_weight_maps = true;
+            const auto actual = mif::fuse(images, options);
+            // 公开诊断返回细节权重；将细节参数设置为基础参数，即可取得原调用的基础权重。
+            auto base_options = options;
+            base_options.detail_radius = options.base_radius;
+            base_options.detail_epsilon = options.base_epsilon;
+            const auto base_result = mif::fuse(images, base_options);
+            require(actual.weight_maps.size() == images.size() && base_result.weight_maps.size() == images.size(),
+                    "Reconstruction diagnostics are missing");
+            require(actual.source_index_map.type() == CV_32SC1 && actual.source_index_map.size() == images.front().size(),
+                    "GFF source index map has an invalid shape or type");
+            double weight_difference = 0;
+            for (std::size_t i = 0; i < images.size(); ++i)
+                weight_difference = std::max(weight_difference,
+                    cv::norm(actual.weight_maps[i], base_result.weight_maps[i], cv::NORM_INF));
+            require(weight_difference > 1e-4, "Reconstruction fixture must distinguish base/detail weights");
+
+            cv::Mat expected(images.front().size(), CV_MAKETYPE(CV_64F, channels));
+            for (int y = 0; y < expected.rows; ++y) {
+                for (int x = 0; x < expected.cols; ++x) {
+                    int owner = 0;
+                    for (std::size_t i = 1; i < images.size(); ++i)
+                        if (actual.weight_maps[i].at<float>(y, x) > actual.weight_maps[owner].at<float>(y, x))
+                            owner = static_cast<int>(i);
+                    require(actual.source_index_map.at<int>(y, x) == owner,
+                            "GFF source indices do not describe the dominant detail weights");
+                    for (int c = 0; c < channels; ++c) {
+                        double value = 0;
+                        for (std::size_t i = 0; i < images.size(); ++i) {
+                            const double source = normalized[i].ptr<float>(y)[x * channels + c];
+                            const double base = bases[i].ptr<float>(y)[x * channels + c];
+                            value += base * base_result.weight_maps[i].at<float>(y, x)
+                                + (source - base) * actual.weight_maps[i].at<float>(y, x);
+                        }
+                        expected.ptr<double>(y)[x * channels + c] = std::clamp(value, 0.0, 1.0);
+                    }
+                }
+            }
+            expected.convertTo(expected, images.front().type(), range);
+            require(cv::norm(actual.image, expected, cv::NORM_INF) <= (depth == CV_32F ? 2e-6 : 1),
+                    "GFF output disagrees with independent two-layer reconstruction");
+            for (std::size_t i = 0; i < images.size(); ++i)
+                require(cv::norm(images[i], originals[i], cv::NORM_INF) == 0,
+                        "GFF buffer reuse modified a strided input");
+        }
+    }
+}
+
 // 常量输入等权平均，公开诊断权重逐像素归一化。
 void weights() {
     cv::Mat a(39, 57, CV_16U, cv::Scalar(10000)), b(39, 57, CV_16U, cv::Scalar(50000));
@@ -187,6 +268,7 @@ void weights() {
         require(cv::checkRange(result.weight_maps[0], true, nullptr, 0, 1.0001), "Invalid weight range");
         require(mae(result.image, cv::Mat(a.size(), CV_16U, cv::Scalar(30000))) <= 1, "Flat image ties should average");
     });
+    checkGuidedLayerReconstruction();
 }
 
 // 通过公开接口验证两种方法的阶段回调：各处理阶段可取消，异常保持类型和消息，

@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
             // 参数类型直接决定方法，五种算法共用同一个调用入口。
             const std::vector<cv::Mat> images{first, second};
             mif::GuidedFilterFusionOptions guided;
-            guided.focus.window_size = 9;
+            guided.focus.window_size = 7;
             cv::imwrite((dir / "fused_guided.png").string(), mif::fuse(images, guided).image);
             cv::imwrite((dir / "fused_pyramid.png").string(), mif::fuse(images, mif::LaplacianPyramidFusionOptions{}).image);
             cv::imwrite((dir / "fused_block_variance.png").string(), mif::fuse(images, mif::BlockVarianceFusionOptions{}).image);
